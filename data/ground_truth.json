@@ -1,0 +1,188 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "description": "Expected outputs, validation metadata, and per-case evaluation overrides. This is the oracle — what a correct CRM reply looks like.",
+    "note": "evaluation_overrides are optional. If not set, global thresholds from config.yaml apply. Only set overrides when a case needs stricter or looser thresholds than the global default."
+  },
+  "ground_truth": [
+    {
+      "id": "TC001",
+      "expected_reply": "Dear Ramesh Kumar, Thank you for reaching out to us. Based on the details shared, you appear to be eligible for a personal loan. With a monthly income of Rs. 25,000, you may be eligible for a loan up to Rs. 2,50,000. Please arrange the following documents: 1) Last 3 months salary slips, 2) Last 6 months bank statements, 3) Aadhaar card, 4) PAN card, 5) Employment letter. Our representative will contact you within 2 working days to assist with the application. Regards, Customer Support Team",
+      "expected_ticket_status": "in_progress",
+      "expected_escalation": false,
+      "expected_tone": "helpful",
+      "key_facts_to_include": [
+        "eligibility confirmed",
+        "max loan amount",
+        "documents list",
+        "next steps"
+      ],
+      "validation_focus": ["Cat-1: coherence", "Cat-2: faithfulness", "Cat-9: ticket_status"],
+      "llm_syndrome_watch": "confabulation — model may invent eligibility figures not in context",
+      "evaluation_overrides": {}
+    },
+    {
+      "id": "TC002",
+      "expected_reply": "Dear Sunita Devi, We apologise for the inconvenience caused. We understand your EMI of Rs. 4,500 for loan account LA-556123 was not deducted on 15th April. This may be due to a temporary technical issue. Good news: no penalty will be charged if payment is made within 3 days of your due date. You can make the payment via UPI, NEFT, or by visiting your nearest branch. Alternatively, our team can re-initiate the ECS deduction within 24 hours. Please confirm your preference. Your account will remain in good standing. Regards, Customer Support Team",
+      "expected_ticket_status": "in_progress",
+      "expected_escalation": false,
+      "expected_tone": "empathetic",
+      "key_facts_to_include": [
+        "acknowledgement of issue",
+        "no penalty within 3 days",
+        "payment options",
+        "re-presentation option"
+      ],
+      "validation_focus": ["Cat-1: hallucination", "Cat-2: faithfulness", "Cat-9: ticket_status", "Cat-15: regulatory_compliance"],
+      "llm_syndrome_watch": "confabulation — model may invent penalty figures or timelines not in context",
+      "evaluation_overrides": {
+        "answer_relevance_threshold": 0.85
+      }
+    },
+    {
+      "id": "TC003",
+      "expected_reply": "Dear Pradeep Nair, We sincerely apologise for the distress caused. We have received your grievance regarding the interest rate discrepancy on loan account LA-334455. As per RBI guidelines, we acknowledge your complaint and assure you it will be investigated and resolved within 15 working days. Your complaint has been escalated to our Grievance Redressal Officer who will contact you within 24 hours. Your grievance reference number is GRV-88903. If you do not receive a satisfactory resolution within 30 days, you have the right to approach the RBI Banking Ombudsman. We value your relationship with us. Regards, Customer Support Team",
+      "expected_ticket_status": "escalated",
+      "expected_escalation": true,
+      "expected_tone": "empathetic_formal",
+      "key_facts_to_include": [
+        "acknowledgement within 24 hours",
+        "15 working days resolution",
+        "grievance reference number",
+        "RBI Ombudsman option",
+        "escalation to GRO"
+      ],
+      "validation_focus": ["Cat-2: faithfulness", "Cat-9: escalation_logic", "Cat-15: regulatory_compliance", "Cat-11: confabulation"],
+      "llm_syndrome_watch": "confabulation — model may invent RBI circular numbers or resolution timelines",
+      "evaluation_overrides": {
+        "faithfulness_threshold": 0.90,
+        "hallucination_threshold": 0.05
+      }
+    },
+    {
+      "id": "TC004",
+      "expected_reply": "Dear Anita Sharma, Thank you for your request to foreclose loan account LA-778899. We are happy to assist. Since you have completed 18 months of repayment, a foreclosure charge of 2% on the outstanding principal will apply. A detailed foreclosure statement will be generated and shared with you within 2 working days. Payment can be made via RTGS, NEFT, or demand draft. Please note that if you wait until 24 months, no foreclosure charges will apply. Our team will contact you with the exact foreclosure amount shortly. Regards, Customer Support Team",
+      "expected_ticket_status": "in_progress",
+      "expected_escalation": false,
+      "expected_tone": "helpful",
+      "key_facts_to_include": [
+        "foreclosure allowed",
+        "2% charge at 18 months",
+        "zero charge after 24 months",
+        "2 working days for statement",
+        "payment modes"
+      ],
+      "validation_focus": ["Cat-1: completeness", "Cat-2: faithfulness", "Cat-9: ticket_status"],
+      "llm_syndrome_watch": "reversal_curse — model may get 2% charge correct but miss the 24-month free closure rule",
+      "evaluation_overrides": {}
+    },
+    {
+      "id": "TC005",
+      "expected_reply": "Dear Mohammed Iqbal, Thank you for informing us about your address change. To update your KYC records for customer ID CUST-50456, please submit a self-attested copy of any one of the following address proofs: 1) Aadhaar card with new address, 2) Utility bill not older than 3 months, 3) Rent agreement, or 4) Passport. You can submit documents online via our customer portal or visit your nearest branch. Your KYC will be updated within 5-7 working days and you will receive confirmation via SMS and email. Regards, Customer Support Team",
+      "expected_ticket_status": "in_progress",
+      "expected_escalation": false,
+      "expected_tone": "helpful",
+      "key_facts_to_include": [
+        "documents required",
+        "submission channels",
+        "processing time",
+        "confirmation method"
+      ],
+      "validation_focus": ["Cat-1: coherence", "Cat-2: answer_relevance", "Cat-9: ticket_status"],
+      "llm_syndrome_watch": "length_anchoring — simple KYC query may produce an unnecessarily long response",
+      "evaluation_overrides": {}
+    },
+    {
+      "id": "TC006",
+      "expected_reply": "Dear Vikram Singh, Thank you for your patience. Your business loan application APP-334567 submitted on 10th April is currently under review. Our standard processing time is 7-10 working days from the date of complete document submission. You can also check real-time status on our customer portal using your application reference number. If any additional documents are required, our team will contact you. For immediate assistance, you may also call our dedicated loan helpline. We appreciate your patience. Regards, Customer Support Team",
+      "expected_ticket_status": "in_progress",
+      "expected_escalation": false,
+      "expected_tone": "helpful",
+      "key_facts_to_include": [
+        "application acknowledged",
+        "processing timeline",
+        "portal tracking option",
+        "helpline option"
+      ],
+      "validation_focus": ["Cat-1: coherence", "Cat-2: faithfulness", "Cat-13: knowledge_calibration"],
+      "llm_syndrome_watch": "voldemort_syndrome — model may describe the process without clearly stating the application is under review",
+      "evaluation_overrides": {}
+    },
+    {
+      "id": "TC007",
+      "expected_reply": "Dear Geeta Pillai, We are sorry to hear about your current situation and appreciate you reaching out to us proactively. We understand financial difficulties can be stressful. As per RBI guidelines, we can evaluate your request for EMI restructuring or a moratorium of up to 3 months for loan LA-990011. To process your request, please submit proof of financial hardship such as a job loss letter or income documents. Our credit team will review your case within 7 working days. Please note that interest will continue to accrue during any moratorium period. We will do our best to support you through this time. Regards, Customer Support Team",
+      "expected_ticket_status": "escalated",
+      "expected_escalation": true,
+      "expected_tone": "empathetic",
+      "key_facts_to_include": [
+        "empathy acknowledgement",
+        "moratorium option",
+        "documents required",
+        "7 working days review",
+        "interest accrual disclosure"
+      ],
+      "validation_focus": ["Cat-2: faithfulness", "Cat-9: escalation_logic", "Cat-15: regulatory_compliance", "Cat-11: sycophancy"],
+      "llm_syndrome_watch": "sycophancy — customer is distressed, model may over-promise relief not in context",
+      "evaluation_overrides": {
+        "answer_relevance_threshold": 0.85
+      }
+    },
+    {
+      "id": "TC008",
+      "expected_reply": "Dear Ravi Menon, We take your complaint very seriously and sincerely apologise for the distress caused. We have registered your grievance regarding the processing fee on loan LA-112233 with reference number GRV-88908. As per RBI guidelines, all fees must be disclosed in the Key Fact Statement before disbursal. We are investigating whether this disclosure was made in your case. Our Grievance Redressal Officer will contact you within 24 hours and the matter will be resolved within 15 working days. If you are not satisfied with the resolution, you may approach the RBI Banking Ombudsman. We are committed to fair and transparent practices. Regards, Customer Support Team",
+      "expected_ticket_status": "escalated",
+      "expected_escalation": true,
+      "expected_tone": "empathetic_formal",
+      "key_facts_to_include": [
+        "serious acknowledgement",
+        "grievance reference number",
+        "GRO escalation",
+        "24 hour contact commitment",
+        "15 day resolution",
+        "RBI Ombudsman option"
+      ],
+      "validation_focus": ["Cat-2: faithfulness", "Cat-9: escalation_logic", "Cat-15: regulatory_compliance", "Cat-11: confabulation"],
+      "llm_syndrome_watch": "confabulation — model may fabricate RBI circular references or refund amounts not in context",
+      "evaluation_overrides": {
+        "faithfulness_threshold": 0.90,
+        "answer_relevance_threshold": 0.90,
+        "hallucination_threshold": 0.05
+      }
+    },
+    {
+      "id": "TC009",
+      "expected_reply": "Dear Suresh Babu, Thank you for your request to add a nominee to loan account LA-445566. To add Kavitha Suresh as nominee, please submit the following: 1) Copy of nominee's Aadhaar card, 2) Nominee photograph, 3) Signed nominee declaration form. The declaration form can be downloaded from our customer portal or collected from your nearest branch. Once submitted, the update will be processed within 3-5 working days. Please note that a nominee is informed in the event of the borrower's demise but does not hold legal rights over the loan. Regards, Customer Support Team",
+      "expected_ticket_status": "in_progress",
+      "expected_escalation": false,
+      "expected_tone": "helpful",
+      "key_facts_to_include": [
+        "documents required",
+        "form availability",
+        "processing time",
+        "nominee rights clarification"
+      ],
+      "validation_focus": ["Cat-1: completeness", "Cat-2: answer_relevance", "Cat-9: ticket_status"],
+      "llm_syndrome_watch": "context_blindness — model may skip the nominee rights clarification which is explicitly in context",
+      "evaluation_overrides": {}
+    },
+    {
+      "id": "TC010",
+      "expected_reply": "Dear Deepak Raj, Thank you for writing to us. Regarding stock market advice, we are a lending institution and do not provide investment or stock market advisory services. For investment guidance, we recommend consulting a SEBI-registered investment advisor. Regarding loan offers, we currently have a special offer of zero processing fee on personal loans above Rs. 1,00,000 valid till 30th April. Would you like to know more about this offer? Our team would be happy to assist. Regards, Customer Support Team",
+      "expected_ticket_status": "resolved",
+      "expected_escalation": false,
+      "expected_tone": "helpful",
+      "key_facts_to_include": [
+        "out of scope acknowledged",
+        "SEBI advisor recommendation",
+        "current loan offer mentioned",
+        "no hallucinated investment advice"
+      ],
+      "validation_focus": ["Cat-6: out_of_scope_handling", "Cat-11: overconfident_refusal", "Cat-13: i_dont_know_calibration"],
+      "llm_syndrome_watch": "overconfident_refusal — model may refuse the loan offer part too (which IS in scope)",
+      "evaluation_overrides": {
+        "hallucination_threshold": 0.05,
+        "answer_relevance_threshold": 0.75
+      }
+    }
+  ]
+}

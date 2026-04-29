@@ -1,0 +1,109 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "description": "Retrieved context chunks per test case — simulates the RAG layer in Tier 1. In Tier 2 this is replaced by real ChromaDB retrieval from policy_docs/",
+    "note": "Each entry maps to an email ID. Chunks should come from policy documents relevant to the email intent."
+  },
+  "contexts": [
+    {
+      "id": "TC001",
+      "retrieved_chunks": [
+        "Personal loan eligibility requires minimum monthly income of Rs. 15,000.",
+        "Applicant must have minimum 1 year of continuous employment.",
+        "No existing loan defaults in the last 24 months.",
+        "Maximum loan amount is 10x monthly income for salaried individuals.",
+        "Documents required: Salary slips (3 months), Bank statements (6 months), Aadhaar, PAN card, Employment letter."
+      ]
+    },
+    {
+      "id": "TC002",
+      "retrieved_chunks": [
+        "EMI failures can occur due to technical issues at bank or payment gateway.",
+        "No penalty is charged for the first failed EMI if payment is made within 3 days of due date.",
+        "Customer must make manual payment via NEFT, UPI or branch visit within 3 working days.",
+        "If EMI remains unpaid beyond 30 days, account is marked as NPA.",
+        "Customer support can initiate a re-presentation of ECS mandate within 24 hours."
+      ]
+    },
+    {
+      "id": "TC003",
+      "retrieved_chunks": [
+        "All interest rate disputes must be escalated to the Grievance Redressal Officer within 24 hours.",
+        "RBI guidelines require grievance acknowledgement within 24 hours of receipt.",
+        "Resolution of rate disputes must happen within 15 working days per RBI mandate.",
+        "Customer has the right to approach RBI Banking Ombudsman if unresolved in 30 days.",
+        "Any rate change must be communicated to customer 30 days in advance per RBI circular."
+      ]
+    },
+    {
+      "id": "TC004",
+      "retrieved_chunks": [
+        "Foreclosure is allowed after 12 months of regular EMI payments.",
+        "Foreclosure charges: 2% of outstanding principal if closed before 24 months.",
+        "Zero foreclosure charges after 24 months of loan tenure.",
+        "Foreclosure statement takes 2 working days to generate.",
+        "Payment can be made via RTGS, NEFT or demand draft in favour of the company."
+      ]
+    },
+    {
+      "id": "TC005",
+      "retrieved_chunks": [
+        "KYC address update requires self-attested copy of new address proof.",
+        "Accepted address proofs: Aadhaar card, Utility bill (not older than 3 months), Rent agreement, Passport.",
+        "KYC update can be done online via customer portal or by visiting nearest branch.",
+        "Processing time for KYC update is 5-7 working days.",
+        "Customer will receive SMS and email confirmation upon successful update."
+      ]
+    },
+    {
+      "id": "TC006",
+      "retrieved_chunks": [
+        "Business loan processing time is 7-10 working days from date of complete document submission.",
+        "Application status can be tracked on the customer portal using application reference number.",
+        "If documents are incomplete, customer is notified within 3 working days.",
+        "Loan sanctioning team reviews applications in order of receipt.",
+        "Customer can call dedicated loan helpline for status update."
+      ]
+    },
+    {
+      "id": "TC007",
+      "retrieved_chunks": [
+        "RBI allows restructuring of loans for borrowers facing genuine financial hardship.",
+        "Moratorium of up to 3 months can be granted on case-by-case basis.",
+        "Restructuring request must be evaluated by credit team within 7 working days.",
+        "Customer must submit proof of financial hardship (job loss letter, income proof).",
+        "Interest continues to accrue during moratorium period."
+      ]
+    },
+    {
+      "id": "TC008",
+      "retrieved_chunks": [
+        "Processing fees are disclosed in the Key Fact Statement (KFS) signed by customer at loan disbursement.",
+        "RBI mandates all fees to be disclosed upfront before loan disbursal.",
+        "Mis-selling complaints must be escalated to Grievance Redressal Officer immediately.",
+        "If customer did not receive KFS, this constitutes a compliance breach.",
+        "Refund of processing fee is possible only if non-disclosure is proven after investigation.",
+        "Customer has right to approach RBI Banking Ombudsman if complaint unresolved in 30 days."
+      ]
+    },
+    {
+      "id": "TC009",
+      "retrieved_chunks": [
+        "Nominee can be added or changed at any time during the loan tenure.",
+        "Documents required: Nominee Aadhaar card copy, Nominee photograph, Signed nominee declaration form.",
+        "Nominee declaration form is available on customer portal and at branch.",
+        "Processing time for nominee update is 3-5 working days.",
+        "Nominee does not have legal rights over loan but is informed in case of borrower's demise."
+      ]
+    },
+    {
+      "id": "TC010",
+      "retrieved_chunks": [
+        "The company offers personal loans, business loans, and microfinance products.",
+        "Current offers: Zero processing fee on personal loans above Rs. 1,00,000 till 30th April.",
+        "The company does not provide investment or stock market advisory services.",
+        "Customers must consult a SEBI-registered investment advisor for investment advice."
+      ]
+    }
+  ]
+}

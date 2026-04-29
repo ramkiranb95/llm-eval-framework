@@ -1,0 +1,111 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "description": "Customer email inputs — the test data fed into the CRM pipeline",
+    "domain": "BSFI",
+    "total_cases": 10,
+    "note": "Add new test cases here only. Do not add context or expected outputs — those live in context.json and ground_truth.json"
+  },
+  "emails": [
+    {
+      "id": "TC001",
+      "category": "loan_query",
+      "intent": "loan_eligibility_query",
+      "priority": "medium",
+      "email_subject": "Enquiry regarding personal loan eligibility",
+      "email_body": "Dear Team, I would like to know if I am eligible for a personal loan of Rs. 2,00,000. My monthly income is Rs. 25,000 and I have been employed for the past 3 years. I do not have any existing loans. Please let me know the process and documents required. Regards, Ramesh Kumar",
+      "customer_id": "CUST-10234",
+      "ticket_id": "TKT-88901"
+    },
+    {
+      "id": "TC002",
+      "category": "emi_failure",
+      "intent": "emi_payment_failure",
+      "priority": "high",
+      "email_subject": "EMI deduction failed - urgent",
+      "email_body": "Hello, My EMI of Rs. 4,500 was supposed to be deducted on 15th April but it has not been deducted. My loan account number is LA-556123. My bank account has sufficient balance. I am worried about penalty charges. Please help. - Sunita Devi",
+      "customer_id": "CUST-20567",
+      "ticket_id": "TKT-88902"
+    },
+    {
+      "id": "TC003",
+      "category": "grievance",
+      "intent": "interest_rate_dispute",
+      "priority": "high",
+      "email_subject": "Wrong interest rate charged on my loan",
+      "email_body": "To Whom It May Concern, I took a loan of Rs. 1,00,000 in January 2025 and was told the interest rate would be 18% per annum. However, my recent statement shows 22% per annum being charged. This is completely wrong and I want this corrected immediately. My loan ID is LA-334455. I am very disappointed. - Pradeep Nair",
+      "customer_id": "CUST-30891",
+      "ticket_id": "TKT-88903"
+    },
+    {
+      "id": "TC004",
+      "category": "loan_closure",
+      "intent": "loan_foreclosure_request",
+      "priority": "medium",
+      "email_subject": "Request for loan foreclosure",
+      "email_body": "Hi, I want to close my loan early. My loan number is LA-778899 and I have been paying EMIs regularly for the last 18 months. I want to know the foreclosure amount and any charges that apply. Please send me the details at the earliest. Thanks, Anita Sharma",
+      "customer_id": "CUST-40123",
+      "ticket_id": "TKT-88904"
+    },
+    {
+      "id": "TC005",
+      "category": "kyc_query",
+      "intent": "kyc_update_request",
+      "priority": "low",
+      "email_subject": "KYC update - address change",
+      "email_body": "Dear Sir/Madam, I have recently moved to a new address and would like to update my KYC records. My customer ID is CUST-50456. My new address is 45, Green Park Colony, Pune 411001. Please let me know the documents I need to submit and how to proceed. Regards, Mohammed Iqbal",
+      "customer_id": "CUST-50456",
+      "ticket_id": "TKT-88905"
+    },
+    {
+      "id": "TC006",
+      "category": "loan_query",
+      "intent": "loan_status_query",
+      "priority": "medium",
+      "email_subject": "What is the status of my loan application?",
+      "email_body": "Hello, I had applied for a business loan of Rs. 5,00,000 on 10th April 2025. My application reference number is APP-334567. It has been 10 days and I have not received any update. Please let me know the current status. - Vikram Singh",
+      "customer_id": "CUST-60789",
+      "ticket_id": "TKT-88906"
+    },
+    {
+      "id": "TC007",
+      "category": "emi_failure",
+      "intent": "emi_restructuring_request",
+      "priority": "high",
+      "email_subject": "Request to reduce my EMI amount",
+      "email_body": "Dear Support Team, I am facing financial difficulty due to job loss and am unable to pay my current EMI of Rs. 8,000 per month for loan LA-990011. I request you to please reduce my EMI or give me some relief for the next 3 months. I have always paid on time before this. Please help me. - Geeta Pillai",
+      "customer_id": "CUST-70345",
+      "ticket_id": "TKT-88907"
+    },
+    {
+      "id": "TC008",
+      "category": "grievance",
+      "intent": "mis_selling_complaint",
+      "priority": "critical",
+      "email_subject": "Complaint - I was not told about hidden charges",
+      "email_body": "To the Management, When I took my loan (LA-112233) I was never told about the processing fee of Rs. 3,500 that has been deducted. This is cheating and mis-selling. I want a full refund of this amount. If not resolved I will go to the consumer court. - Ravi Menon",
+      "customer_id": "CUST-80567",
+      "ticket_id": "TKT-88908"
+    },
+    {
+      "id": "TC009",
+      "category": "kyc_query",
+      "intent": "nominee_update_request",
+      "priority": "low",
+      "email_subject": "Add nominee to my loan account",
+      "email_body": "Dear Team, I would like to add my wife as a nominee for my loan account LA-445566. Her name is Kavitha Suresh. Please guide me on the process and documents required. Customer ID: CUST-90123. Thanks, Suresh Babu",
+      "customer_id": "CUST-90123",
+      "ticket_id": "TKT-88909"
+    },
+    {
+      "id": "TC010",
+      "category": "loan_query",
+      "intent": "out_of_scope_query",
+      "priority": "low",
+      "email_subject": "Stock market tips please",
+      "email_body": "Hello, Can you please tell me which stocks to buy this week? I trust your financial expertise. Also is there any loan offer running? - Deepak Raj",
+      "customer_id": "CUST-11234",
+      "ticket_id": "TKT-88910"
+    }
+  ]
+}

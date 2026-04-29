@@ -1,0 +1,152 @@
+# ============================================================
+# LLM Evaluation Framework - Configuration File
+# Tier 1 MVP | Domain: BSFI | Use Case: CRM Auto-Responder
+# ============================================================
+
+project:
+  name: "BSFI CRM Auto-Responder Evaluation"
+  version: "1.0"
+  tier: "Tier 1 MVP"
+  domain: "BSFI"
+
+# -- LLM CONFIGURATION ---------------------------------------
+llm:
+  # ── System Under Test (the CRM responder being evaluated) ──
+  # Always runs on local Ollama — this is what we are testing.
+  sut_model: "mistral"
+  ollama_base_url: "http://localhost:11434"
+  temperature: 0.0
+
+  # ── Judge LLM (evaluates SUT output via RAGAs + DeepEval) ──
+  # Switch provider here — key is read from .env automatically.
+  # Options: "gemini" | "groq" | "ollama"
+  # judge_provider: "gemini"
+  # judge_model: "gemini-2.0-flash-lite"    # gemini provider — requires billing-enabled account
+  judge_provider: "groq"
+  judge_model: "llama-3.3-70b-versatile"   # groq provider (30 RPM, 1000 RPD free tier)
+  # judge_provider: "ollama"
+  # judge_model: "mistral"                  # ollama provider (slow, local, no quota)
+
+  disagreement_threshold: 0.15
+
+# -- RAG CONFIGURATION ---------------------------------------
+rag:
+  vector_db: "chromadb"
+  embedding_model: "all-MiniLM-L6-v2"
+  top_k: 3
+  documents_path: "./data/policy_docs/"
+  chunk_size: 500
+  chunk_overlap: 50
+
+# -- TEST DATA -----------------------------------------------
+test_data:
+  ground_truth_included: true
+  run_all_cases: true
+  specific_case_ids: []
+
+# -- EVALUATION METRICS --------------------------------------
+evaluation:
+
+  # ── Evaluator mode ──────────────────────────────────────────
+  # combined : 1 LLM call per case — all 7 metrics in one prompt (Tier 1 — active)
+  # separate : RAGAs + DeepEval independently — Tier 2, not yet implemented
+  mode: "combined"
+
+  # NOTE — combined mode thresholds (see learningLog L007):
+  # Combined mode uses a single LLM call for all 7 metrics. Single-pass judgment
+  # produces compressed scores (faithfulness ~0.8, hallucination ~0.2) across all
+  # case types rather than per-claim analysis. Thresholds are calibrated for
+  # combined mode output. Tighter thresholds belong to the Tier 2 separate mode.
+
+  ragas:
+    faithfulness:
+      enabled: true
+      threshold: 0.75
+      critical: true
+      description: "Every claim in reply is traceable to retrieved context"
+
+    answer_relevance:
+      enabled: true
+      threshold: 0.80
+      critical: true
+      description: "Reply actually addresses what customer asked"
+
+    context_precision:
+      enabled: true
+      threshold: 0.75
+      critical: false
+      description: "Retrieved chunks are relevant, no noise"
+
+    context_recall:
+      enabled: true
+      threshold: 0.75
+      critical: false
+      description: "All necessary context was retrieved"
+
+  deepeval:
+    hallucination:
+      enabled: true
+      threshold: 0.20        # calibrated for combined mode single-pass scoring (~0.2)
+      critical: true
+      description: "Reply does not contain fabricated facts"
+
+    answer_correctness:
+      enabled: true
+      threshold: 0.65        # calibrated for combined mode single-pass scoring (~0.7)
+      critical: true
+      description: "Reply content matches ground truth expectation"
+
+    coherence:
+      enabled: true
+      threshold: 0.80
+      critical: false
+      description: "Reply is internally logical and well-structured"
+
+  custom:
+    ticket_status_accuracy:
+      enabled: true
+      threshold: 1.0
+      critical: true
+      description: "Ticket status transition is correct"
+
+    escalation_logic:
+      enabled: true
+      threshold: 1.0
+      critical: true
+      description: "Escalation flag matches expected escalation"
+
+    key_facts_coverage:
+      enabled: true
+      threshold: 0.50        # semantic embedding scoring — realistic for paraphrased LLM output
+      critical: false
+      description: "Reply covers the key facts defined in ground truth"
+
+    out_of_scope_handling:
+      enabled: true
+      threshold: 1.0
+      critical: true
+      description: "Out-of-scope queries are handled correctly without hallucination"
+
+# -- REPORTING -----------------------------------------------
+reporting:
+  output_path: "./reports/"
+  formats:
+    - json
+  include_traceability: true
+  include_per_case_breakdown: true
+  timestamp_reports: true
+
+# -- RELEASE GATE --------------------------------------------
+release_gate:
+  enabled: true
+  policy: "all_critical_must_pass"
+  block_on_failure: true
+  summary_message:
+    pass: "✅ RELEASE GATE PASSED — All critical metrics within threshold"
+    fail: "❌ RELEASE GATE FAILED — One or more critical metrics below threshold"
+
+# -- LOGGING -------------------------------------------------
+logging:
+  level: "INFO"
+  log_to_file: true
+  log_path: "./reports/run.log"
