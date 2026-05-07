@@ -1,7 +1,7 @@
 """
 playground.py
 -------------
-The local BSFI hands-on sandbox. Run any single test case or all 10 instantly.
+The local BSFI hands-on sandbox. Run any single test case or all 16 instantly.
 
 This is your fast feedback loop — no pytest, no full report file.
 Use this to:
@@ -13,19 +13,21 @@ Use this to:
 Usage:
     python playground.py TC001          # run single case
     python playground.py TC003 TC008    # run specific cases
-    python playground.py --all          # run all 10 cases
+    python playground.py --all          # run all 16 cases
     python playground.py --list         # list available cases
 """
 
 import sys
+import time
 import argparse
+import concurrent.futures
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.rule import Rule
 from rich import print as rprint
 
-from src.utils.config_loader import load_config
+from src.utils.config_loader import load_config, get_pipeline_config
 from src.utils.data_loader import load_test_cases, get_case_by_id
 from src.pipeline.crm_responder import generate_response
 from src.evaluators.custom_evaluator import evaluate as custom_evaluate
@@ -42,14 +44,22 @@ def run_case(test_case: dict, config: dict, verbose: bool = True) -> dict:
     """
     Run one test case through the full evaluation pipeline.
 
+    Pre-conditions checked before any LLM call:
+      1. email_body must be >= min_email_body_length (config.yaml pipeline section)
+      2. SUT output must be valid (non-empty reply, no meta_parse_error, non-empty context)
+
     Returns:
         {
             "pipeline_output"   : dict from crm_responder
             "all_scores"        : merged scores from all evaluators
             "threshold_result"  : dict from threshold_checker (with "id")
         }
+
+    Raises:
+        ValueError if pre-conditions are not met (caught and logged by main()).
     """
-    case_id = test_case["id"]
+    pipeline_cfg = get_pipeline_config(config)
+    case_id      = test_case["id"]
 
     if verbose:
         console.print(Rule(f"[bold cyan]{case_id} — {test_case['intent']}[/bold cyan]"))
@@ -57,8 +67,30 @@ def run_case(test_case: dict, config: dict, verbose: bool = True) -> dict:
         console.print(f"[bold]Email:[/bold]    {test_case['email_subject']}")
         console.print(f"[dim]Syndrome watch: {test_case.get('llm_syndrome_watch', '—')}[/dim]\n")
 
-    # ── Step 1: Generate CRM reply ────────────────────────────────────────────
-    pipeline_output = generate_response(test_case, config)
+    # ── Gate 1: Minimum email body length ────────────────────────────────────
+    email_body    = test_case.get("email_body", "")
+    min_length    = pipeline_cfg["min_email_body_length"]
+    if len(email_body) < min_length:
+        raise ValueError(
+            f"email body too short ({len(email_body)} chars, minimum {min_length}) "
+            f"— skipped before LLM call"
+        )
+
+    # ── Step 1: Generate CRM reply (with per-case timeout) ────────────────────
+    case_timeout = pipeline_cfg["case_timeout_seconds"]
+
+    if verbose:
+        console.print(f"[dim]Running CRM responder (timeout: {case_timeout}s)...[/dim]")
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(generate_response, test_case, config)
+            pipeline_output = future.result(timeout=case_timeout)
+    except concurrent.futures.TimeoutError:
+        raise ValueError(
+            f"generate_response() timed out after {case_timeout}s — "
+            f"Ollama may be unresponsive"
+        )
 
     if verbose:
         console.print(Panel(
@@ -81,8 +113,16 @@ def run_case(test_case: dict, config: dict, verbose: bool = True) -> dict:
     # Custom evaluator always runs — deterministic, no LLM
     custom_scores = custom_evaluate(pipeline_output)
 
-    # LLM-based evaluators — routed by mode
-    if eval_mode == "combined":
+    # ── Gate 2: Confidence gate — skip LLM eval if SUT output is invalid ─────
+    meta_parse_error = pipeline_output.get("meta_parse_error")
+    empty_context    = len(pipeline_output.get("retrieved_context", [])) == 0
+
+    if meta_parse_error or empty_context:
+        reason = "meta_parse_error" if meta_parse_error else "empty retrieved context"
+        if verbose:
+            console.print(f"[yellow]⚠ LLM evaluation skipped — SUT output invalid ({reason})[/yellow]")
+        llm_scores = _skipped_llm_scores(reason)
+    elif eval_mode == "combined":
         from src.evaluators.combined_evaluator import evaluate as combined_evaluate
         llm_scores = combined_evaluate(pipeline_output, config)
     else:
@@ -100,10 +140,14 @@ def run_case(test_case: dict, config: dict, verbose: bool = True) -> dict:
     all_scores.update(custom_scores)
     all_scores.update(llm_scores)
 
+    # ── Routing decision log (after all scores available) ────────────────────
+    if verbose:
+        _print_routing_decision(pipeline_output, custom_scores, llm_scores, config)
+
     # ── Step 3: Threshold check ──────────────────────────────────────────────
-    overrides       = pipeline_output.get("evaluation_overrides", {})
+    overrides        = pipeline_output.get("evaluation_overrides", {})
     threshold_result = check_thresholds(all_scores, config, overrides)
-    threshold_result["id"] = case_id  # tag with case_id for release gate
+    threshold_result["id"] = case_id
 
     # ── Step 4: Print scores table ───────────────────────────────────────────
     if verbose:
@@ -114,6 +158,91 @@ def run_case(test_case: dict, config: dict, verbose: bool = True) -> dict:
         "all_scores"       : all_scores,
         "threshold_result" : threshold_result
     }
+
+
+def _skipped_llm_scores(reason: str) -> dict:
+    """Return null scores for all LLM-based metrics when the confidence gate fires."""
+    from src.evaluators.combined_evaluator import LLM_METRICS
+    error_msg = f"skipped — SUT output invalid ({reason})"
+    scores    = {}
+    for metric in LLM_METRICS:
+        scores[metric] = {"score": None, "error": error_msg}
+        if metric == "hallucination":
+            scores[metric]["reason"] = ""
+    return scores
+
+
+def _print_routing_decision(
+    pipeline_output: dict,
+    custom_scores: dict,
+    llm_scores: dict,
+    config: dict,
+) -> None:
+    """
+    Print a routing decision block after all evaluators have run.
+
+    Three classes of triggers:
+      1. Deterministic — language_check, restricted_words (from custom_evaluator)
+      2. SUT prediction — predicted_escalation=True
+      3. LLM confidence — any critical LLM metric score below pipeline.confidence_threshold
+         (inverted metrics use 1 - confidence_threshold as their upper bound)
+    """
+    from src.evaluators.combined_evaluator import INVERTED_METRICS
+    from src.scoring.threshold_checker import _is_critical
+
+    confidence_threshold = config.get("pipeline", {}).get("confidence_threshold", 0.50)
+    reasons = []
+
+    # ── 1. Language check ────────────────────────────────────────────────────
+    lang = custom_scores.get("language_check", {})
+    if lang.get("score") == 0.0:
+        reasons.append(f"language_check=0.0 — {lang.get('notes', 'non-English detected')}")
+
+    # ── 2. Escalation predicted by SUT ──────────────────────────────────────
+    if pipeline_output.get("predicted_escalation"):
+        reasons.append(
+            f"escalation=True — {pipeline_output.get('ticket_reasoning', 'SUT flagged for escalation')}"
+        )
+
+    # ── 3. Restricted words in reply ─────────────────────────────────────────
+    rw = custom_scores.get("restricted_words", {})
+    if rw.get("score") == 0.0:
+        reasons.append(f"restricted_words=0.0 — {rw.get('notes', 'violation found')}")
+
+    # ── 4. LLM confidence threshold — critical metrics only ──────────────────
+    for metric, data in llm_scores.items():
+        score = data.get("score")
+        if score is None:
+            continue
+
+        if not _is_critical(metric, config):
+            continue
+
+        inverted = metric in INVERTED_METRICS
+        if inverted:
+            # lower is better — flag if score exceeds (1 - confidence_threshold)
+            upper_bound = 1.0 - confidence_threshold
+            if score > upper_bound:
+                reasons.append(
+                    f"{metric}={score:.3f} ↑ above {upper_bound:.2f} (confidence_threshold={confidence_threshold})"
+                )
+        else:
+            # higher is better — flag if score is below confidence_threshold
+            if score < confidence_threshold:
+                reasons.append(
+                    f"{metric}={score:.3f} below confidence_threshold={confidence_threshold}"
+                )
+
+    ticket_status = pipeline_output.get("predicted_ticket_status", "—")
+
+    if reasons:
+        console.print(f"\n[bold red]⚠  ROUTING: Assign to human agent[/bold red]")
+        console.print(f"   Ticket status : [yellow]{ticket_status}[/yellow]")
+        for r in reasons:
+            console.print(f"   Reason        : [yellow]{r}[/yellow]")
+    else:
+        console.print(f"\n[bold green]✓  ROUTING: Auto-reply eligible[/bold green]")
+        console.print(f"   Ticket status : [green]{ticket_status}[/green]")
 
 
 def _print_scores_table(threshold_result: dict, overrides: dict) -> None:
@@ -137,7 +266,6 @@ def _print_scores_table(threshold_result: dict, overrides: dict) -> None:
         inverted  = data.get("inverted", False)
         error     = data.get("error") or data.get("notes", "")
 
-        # Colour
         if score is None:
             colour = "yellow"
         elif passed is True:
@@ -147,11 +275,10 @@ def _print_scores_table(threshold_result: dict, overrides: dict) -> None:
         else:
             colour = "yellow"
 
-        # Override indicator
-        override_key = f"{metric}_threshold"
+        override_key  = f"{metric}_threshold"
         threshold_str = f"{threshold:.2f}" if threshold is not None else "—"
         if override_key in overrides:
-            threshold_str += " [dim]†[/dim]"  # dagger = per-case override
+            threshold_str += " [dim]†[/dim]"
 
         table.add_row(
             metric,
@@ -201,7 +328,7 @@ def main():
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Run all 10 test cases."
+        help="Run all test cases."
     )
     parser.add_argument(
         "--list",
@@ -221,7 +348,8 @@ def main():
         list_cases()
         return
 
-    config = load_config()
+    config       = load_config()
+    pipeline_cfg = get_pipeline_config(config)
 
     # Determine which cases to run
     if args.all:
@@ -233,11 +361,11 @@ def main():
         console.print("\n[yellow]Tip: run a case with: python playground.py TC001[/yellow]\n")
         return
 
-    # Run all selected cases
-    all_pipeline_outputs   = []
-    all_threshold_results  = []
+    all_pipeline_outputs  = []
+    all_threshold_results = []
+    delay                 = pipeline_cfg["inter_case_delay_seconds"]
 
-    for test_case in test_cases:
+    for i, test_case in enumerate(test_cases):
         try:
             result = run_case(test_case, config, verbose=True)
             all_pipeline_outputs.append(result["pipeline_output"])
@@ -245,6 +373,11 @@ def main():
         except ValueError as e:
             console.print(f"[red]✗ SKIPPED {test_case.get('id', '?')}: {e}[/red]")
         console.print()
+
+        # Inter-case delay on batch runs to avoid hitting rate limits
+        if args.all and i < len(test_cases) - 1 and delay > 0:
+            console.print(f"[dim]Waiting {delay}s before next case...[/dim]")
+            time.sleep(delay)
 
     # Release gate
     gate = evaluate_gate(all_threshold_results, config)
@@ -265,7 +398,6 @@ def main():
                 f" — score={f['score']} threshold={f['threshold']}"
             )
 
-    # Optionally save JSON report — runs in finally so it saves even if evaluators threw
     if args.save_report:
         try:
             from src.reporting.report_generator import save_json_report

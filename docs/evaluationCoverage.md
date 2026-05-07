@@ -132,7 +132,7 @@ Tier 1 covers a focused subset. All 15 categories are planned across tiers.
 
 ---
 
-### Category 11 — LLM Syndromes (Bach and Bolton)
+### Category 11 — LLM Syndromes
 `confabulation` `sycophancy` `reversal_curse` `context_blindness`
 `instruction_amnesia` `overconfident_refusal` `role_collapse`
 `format_regression` `length_anchoring` `voldemort_syndrome`

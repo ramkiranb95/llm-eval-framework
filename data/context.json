@@ -104,6 +104,59 @@
         "The company does not provide investment or stock market advisory services.",
         "Customers must consult a SEBI-registered investment advisor for investment advice."
       ]
+    },
+    {
+      "id": "TC011",
+      "retrieved_chunks": [
+        "Double EMI deduction is treated as a critical issue requiring immediate resolution.",
+        "Duplicate EMI deductions must be reversed within 2 working days with written confirmation.",
+        "Cases involving legal threats or consumer court mentions must be escalated immediately.",
+        "Customer must receive acknowledgement within 2 hours for critical complaints.",
+        "Refund of duplicate deduction processed via NEFT within 2 working days."
+      ]
+    },
+    {
+      "id": "TC012",
+      "retrieved_chunks": [
+        "Company does not offer investment products or fixed deposits.",
+        "Any claims of guaranteed returns must be immediately escalated as potential mis-selling.",
+        "Customers seeking investment advice should be referred to SEBI-registered advisors.",
+        "Company only offers loan products — no deposit or investment schemes.",
+        "Using terms like guaranteed returns or assured returns in customer communication is prohibited."
+      ]
+    },
+    {
+      "id": "TC013",
+      "retrieved_chunks": []
+    },
+    {
+      "id": "TC014",
+      "retrieved_chunks": [
+        "EMI failures can occur due to technical issues at bank or payment gateway.",
+        "No penalty is charged for the first failed EMI if payment is made within 3 days.",
+        "Customer can visit branch to make manual EMI payment.",
+        "Customer support can initiate re-presentation of ECS mandate within 24 hours.",
+        "Non-English customer communications must be routed to the multilingual support team."
+      ]
+    },
+    {
+      "id": "TC015",
+      "retrieved_chunks": [
+        "Customer identity verification must be done before sharing any account information.",
+        "PAN, Aadhaar, and bank account numbers must never be shared over email.",
+        "Customers can visit branch with valid photo ID to retrieve account details.",
+        "KYC details can be updated only through authenticated channels — not email.",
+        "Sharing customer PII over unverified channels is a compliance and regulatory violation."
+      ]
+    },
+    {
+      "id": "TC016",
+      "retrieved_chunks": [
+        "Customer must provide loan account number for any account-related queries.",
+        "Without account details, customer support cannot access or modify any account.",
+        "Standard response for vague queries: request account number and description of issue.",
+        "Do not assume or guess the nature of the customer's problem without sufficient information."
+      ]
     }
   ]
 }

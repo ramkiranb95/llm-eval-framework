@@ -9,6 +9,8 @@ Metrics computed here:
     escalation_logic        — exact match: predicted escalation flag vs expected
     key_facts_coverage      — fraction of expected key facts found in the reply
     out_of_scope_handling   — special check for TC010 (and similar OOS cases)
+    restricted_words        — detects BSFI regulatory risk phrases in the reply
+    language_check          — heuristic English detection; routes non-English to human
 
 All scores are floats in [0.0, 1.0].
     1.0 = perfect    0.0 = complete failure
@@ -77,15 +79,20 @@ def _key_facts_coverage(reply: str, key_facts: list) -> float:
 
     try:
         model = _get_embedding_model()
+    except Exception:
+        return None
 
+    try:
         # Split reply into sentences for finer-grained matching
         sentences = [s.strip() for s in re.split(r'[.!?\n]', reply) if len(s.strip()) > 5]
         if not sentences:
             sentences = [reply]
 
+        # Single encode call — slice result into sentence and fact embeddings
         # normalize_embeddings=True → dot product equals cosine similarity
-        sentence_embs = model.encode(sentences, normalize_embeddings=True)
-        fact_embs     = model.encode(key_facts,  normalize_embeddings=True)
+        all_embs      = model.encode(sentences + key_facts, normalize_embeddings=True)
+        sentence_embs = all_embs[:len(sentences)]
+        fact_embs     = all_embs[len(sentences):]
 
         covered = sum(
             1 for fact_emb in fact_embs
@@ -94,10 +101,66 @@ def _key_facts_coverage(reply: str, key_facts: list) -> float:
         return round(covered / len(key_facts), 4)
 
     except Exception:
-        # Fallback: substring match
-        reply_lower = reply.lower()
-        found = sum(1 for fact in key_facts if fact.lower() in reply_lower)
-        return round(found / len(key_facts), 4)
+        return None
+
+
+_RESTRICTED_PHRASES = [
+    "guarantee", "guaranteed", "assured returns", "assured",
+    "definitely approved", "100% safe", "no risk", "risk free",
+    "risk-free", "double your money", "invest in", "buy this",
+    "sell this", "stock tip", "market tip",
+]
+
+
+def restricted_words(reply: str) -> dict:
+    """
+    Check if the reply contains BSFI-restricted phrases that create regulatory risk.
+
+    These are phrases a CRM bot must never use — they imply guaranteed returns,
+    investment advice, or certainty of approval, which are mis-selling risks
+    under RBI/SEBI regulations.
+
+    Returns:
+        {"score": 1.0, "notes": "No restricted words found"}          — clean
+        {"score": 0.0, "notes": "Restricted words found: [...]"}      — violation
+    """
+    reply_lower = reply.lower()
+    found = [phrase for phrase in _RESTRICTED_PHRASES if phrase in reply_lower]
+
+    if found:
+        return {"score": 0.0, "notes": f"Restricted words found: {found}"}
+    return {"score": 1.0, "notes": "No restricted words found"}
+
+
+def language_check(reply: str) -> dict:
+    """
+    Heuristic check for whether the reply is in English.
+
+    Uses the ratio of ASCII alphabetic characters to total alphabetic characters.
+    Divides by total alpha characters (not total chars) to avoid false negatives
+    from punctuation, digits, spaces, and currency symbols (Rs., %, etc.) which
+    are common in BSFI replies but are not language indicators.
+
+    A reply with a high proportion of non-ASCII alpha characters is likely
+    non-English (Hindi, Tamil, Bengali, etc.) and should be routed to a
+    multilingual agent.
+
+    Threshold: ratio >= 0.85 → English, < 0.85 → non-English.
+
+    Returns:
+        {"score": 1.0, "notes": "English detected"}
+        {"score": 0.0, "notes": "Non-English reply detected — assign to human agent"}
+    """
+    if not reply:
+        return {"score": 1.0, "notes": "Empty reply — defaulting to English"}
+
+    ascii_alpha = sum(1 for c in reply if c.isascii() and c.isalpha())
+    total_alpha = sum(1 for c in reply if c.isalpha())
+    ratio = ascii_alpha / total_alpha if total_alpha > 0 else 1.0
+
+    if ratio >= 0.85:
+        return {"score": 1.0, "notes": "English detected"}
+    return {"score": 0.0, "notes": "Non-English reply detected — assign to human agent"}
 
 
 def _out_of_scope_handling(reply: str, intent: str) -> Optional[float]:
@@ -174,11 +237,18 @@ def evaluate(pipeline_output: dict, test_case: Optional[dict] = None) -> dict:
     }
 
     # 3. Key facts coverage
-    kf_score = _key_facts_coverage(reply, gt.get("key_facts_to_include", []))
-    results["key_facts_coverage"] = {
-        "score" : kf_score,
-        "notes" : f"{int(kf_score * len(gt.get('key_facts_to_include', [])))} / {len(gt.get('key_facts_to_include', []))} facts found"
-    }
+    key_facts = gt.get("key_facts_to_include", [])
+    kf_score  = _key_facts_coverage(reply, key_facts)
+    if kf_score is None:
+        results["key_facts_coverage"] = {
+            "score" : None,
+            "notes" : "embedding model unavailable — key_facts_coverage skipped"
+        }
+    else:
+        results["key_facts_coverage"] = {
+            "score" : kf_score,
+            "notes" : f"{int(kf_score * len(key_facts))} / {len(key_facts)} facts found"
+        }
 
     # 4. Out-of-scope handling (only for OOS cases)
     oos_score = _out_of_scope_handling(reply, intent)
@@ -187,6 +257,12 @@ def evaluate(pipeline_output: dict, test_case: Optional[dict] = None) -> dict:
             "score" : oos_score,
             "notes" : "fabricated advice" if oos_score == 0.0 else ("redirected correctly" if oos_score == 1.0 else "ambiguous")
         }
+
+    # 5. Restricted words (always run)
+    results["restricted_words"] = restricted_words(reply)
+
+    # 6. Language check (always run)
+    results["language_check"] = language_check(reply)
 
     return results
 

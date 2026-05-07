@@ -2,9 +2,8 @@
 
 ## What Are LLM Syndromes?
 
-LLM Syndromes are named, observable, repeatable failure patterns in language models.
-Coined and documented by James Bach and Michael Bolton as part of extending
-Rapid Software Testing (RST) thinking to AI systems.
+LLM Syndromes are named, observable, repeatable failure patterns in language models,
+rooted in Rapid Software Testing (RST) thinking applied to AI systems.
 
 Unlike traditional software bugs (which are deterministic), LLM syndromes are
 **probabilistic tendencies** — the model is statistically biased toward a
@@ -170,10 +169,3 @@ check if model commits to a clear response
 | Length Anchoring | Tier 3 | Input length variation |
 | Voldemort Syndrome | Tier 2 | Direct-answer questions |
 
----
-
-## References
-
-- James Bach — [Rapid Software Testing](https://www.satisfice.com/rapid-software-testing)
-- Michael Bolton — [DevelopSense Blog](https://developsense.com/blog)
-- LLM Syndromes originated in RST community discussions on AI system testing

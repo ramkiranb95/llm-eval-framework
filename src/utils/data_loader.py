@@ -17,6 +17,7 @@ Standalone test:
 """
 
 import json
+from functools import cache
 from pathlib import Path
 from typing import Optional
 
@@ -47,6 +48,7 @@ def validate_case_fields(case: dict) -> None:
         )
 
 
+@cache
 def _load_json(filename: str) -> dict:
     path = DATA_DIR / filename
     if not path.exists():
