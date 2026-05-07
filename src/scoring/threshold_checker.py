@@ -24,7 +24,7 @@ from typing import Optional
 
 
 # Metrics where a LOWER score is better — pass if score <= threshold
-INVERTED_METRICS = {"hallucination"}
+INVERTED_METRICS = {"hallucination", "toxicity"}
 
 
 def _resolve_threshold(

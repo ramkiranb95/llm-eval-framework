@@ -25,7 +25,7 @@ ENV_PATH     = PROJECT_ROOT / ".env"
 
 def load_env() -> None:
     """Load .env file into environment variables. Silent if file doesn't exist."""
-    load_dotenv(dotenv_path=ENV_PATH)
+    load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 
 def validate_config_thresholds(config: dict) -> None:
@@ -94,20 +94,81 @@ def get_llm_config(config: dict = None) -> dict:
 def get_sut_config(config: dict = None) -> dict:
     """
     Returns config for the System Under Test (CRM responder).
-    Always runs on local Ollama — this is the model being evaluated.
+    Provider is set in config.yaml → llm.sut_provider.
+    API key is read from .env automatically.
 
-    Keys:
-        sut_model       : e.g. "mistral"
-        ollama_base_url : "http://localhost:11434"
-        temperature     : 0.0
+    Returns:
+        {
+            "provider" : "gemini" | "groq" | "cerebras" | "ollama",
+            "model"    : model name string,
+            "base_url" : OpenAI-compatible endpoint URL,
+            "api_key"  : API key from .env (or "ollama" for local),
+            "temperature": float,
+        }
+
+    Raises:
+        ValueError if the API key for the configured provider is not set in .env
     """
-    config = config or load_config()
-    llm    = config["llm"]
-    return {
-        "model"      : llm["sut_model"],
-        "base_url"   : llm["ollama_base_url"],
-        "temperature": llm["temperature"]
-    }
+    load_env()
+    config   = config or load_config()
+    llm      = config["llm"]
+    provider = llm.get("sut_provider", "ollama")
+    model    = llm["sut_model"]
+    temp     = llm.get("temperature", 0.0)
+
+    if provider == "gemini":
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if not api_key or api_key == "paste_your_gemini_key_here":
+            raise ValueError(
+                "GEMINI_API_KEY is not set in .env — "
+                "add your key or switch sut_provider to 'groq' or 'ollama'"
+            )
+        return {
+            "provider"   : "gemini",
+            "model"      : model,
+            "base_url"   : "https://generativelanguage.googleapis.com/v1beta/openai/",
+            "api_key"    : api_key,
+            "temperature": temp,
+        }
+
+    elif provider == "groq":
+        api_key = os.getenv("GROQ_API_KEY", "")
+        if not api_key or api_key == "paste_your_groq_key_here":
+            raise ValueError(
+                "GROQ_API_KEY is not set in .env — "
+                "add your key or switch sut_provider to 'gemini' or 'ollama'"
+            )
+        return {
+            "provider"   : "groq",
+            "model"      : model,
+            "base_url"   : "https://api.groq.com/openai/v1",
+            "api_key"    : api_key,
+            "temperature": temp,
+        }
+
+    elif provider == "cerebras":
+        api_key = os.getenv("CEREBRAS_API_KEY", "")
+        if not api_key or api_key == "paste_your_cerebras_key_here":
+            raise ValueError(
+                "CEREBRAS_API_KEY is not set in .env — "
+                "add your key or switch sut_provider to 'groq' or 'ollama'"
+            )
+        return {
+            "provider"   : "cerebras",
+            "model"      : model,
+            "base_url"   : "https://api.cerebras.ai/v1",
+            "api_key"    : api_key,
+            "temperature": temp,
+        }
+
+    else:  # ollama — local fallback
+        return {
+            "provider"   : "ollama",
+            "model"      : model,
+            "base_url"   : llm["ollama_base_url"],
+            "api_key"    : "ollama",
+            "temperature": temp,
+        }
 
 
 def get_judge_config(config: dict = None) -> dict:
@@ -133,6 +194,9 @@ def get_judge_config(config: dict = None) -> dict:
     provider = llm.get("judge_provider", "ollama")
     model    = llm.get("judge_model", llm.get("sut_model", "mistral"))
 
+    timeout     = llm.get("judge_timeout", 30)
+    temperature = llm.get("judge_temperature", 0.0)
+
     if provider == "gemini":
         api_key = os.getenv("GEMINI_API_KEY", "")
         if not api_key or api_key == "paste_your_gemini_key_here":
@@ -141,10 +205,12 @@ def get_judge_config(config: dict = None) -> dict:
                 "add your key or switch judge_provider to 'groq' or 'ollama'"
             )
         return {
-            "provider" : "gemini",
-            "model"    : model,
-            "base_url" : "https://generativelanguage.googleapis.com/v1beta/openai/",
-            "api_key"  : api_key,
+            "provider"   : "gemini",
+            "model"      : model,
+            "base_url"   : "https://generativelanguage.googleapis.com/v1beta/openai/",
+            "api_key"    : api_key,
+            "timeout"    : timeout,
+            "temperature": temperature,
         }
 
     elif provider == "groq":
@@ -155,19 +221,42 @@ def get_judge_config(config: dict = None) -> dict:
                 "add your key or switch judge_provider to 'gemini' or 'ollama'"
             )
         return {
-            "provider" : "groq",
-            "model"    : model,
-            "base_url" : "https://api.groq.com/openai/v1",
-            "api_key"  : api_key,
+            "provider"   : "groq",
+            "model"      : model,
+            "base_url"   : "https://api.groq.com/openai/v1",
+            "api_key"    : api_key,
+            "timeout"    : timeout,
+            "temperature": temperature,
         }
 
     else:  # ollama — local fallback
         return {
-            "provider" : "ollama",
-            "model"    : model,
-            "base_url" : llm["ollama_base_url"] + "/v1",
-            "api_key"  : "ollama",
+            "provider"   : "ollama",
+            "model"      : model,
+            "base_url"   : llm["ollama_base_url"] + "/v1",
+            "api_key"    : "ollama",
+            "timeout"    : timeout,
+            "temperature": temperature,
         }
+
+
+def get_pipeline_config(config: dict = None) -> dict:
+    """
+    Returns pipeline validation configuration.
+
+    Keys:
+        min_email_body_length : int  — emails shorter than this skip the AI workflow
+        case_timeout_seconds  : int  — per-case wall-clock timeout for generate_response()
+        inter_case_delay_seconds : int — pause between cases on --all runs
+    """
+    config = config or load_config()
+    pipeline = config.get("pipeline", {})
+    llm      = config.get("llm", {})
+    return {
+        "min_email_body_length"  : pipeline.get("min_email_body_length", 50),
+        "case_timeout_seconds"   : pipeline.get("case_timeout_seconds", 120),
+        "inter_case_delay_seconds": llm.get("inter_case_delay_seconds", 2),
+    }
 
 
 def get_rag_config(config: dict = None) -> dict:
@@ -184,6 +273,21 @@ def get_rag_config(config: dict = None) -> dict:
     """
     config = config or load_config()
     return config["rag"]
+
+
+def get_disagreement_threshold(config: dict = None) -> float:
+    """
+    Returns the disagreement threshold used to flag internally inconsistent judge scores.
+
+    When faithfulness is high but hallucination is also high (or vice versa), the judge
+    is contradicting itself. This threshold defines how large that contradiction must be
+    before it gets flagged as a warning on the score dict.
+
+    Configured under llm.disagreement_threshold in config.yaml.
+    Default: 0.15 — flags deviations greater than 15% from expected inverse consistency.
+    """
+    config = config or load_config()
+    return float(config.get("llm", {}).get("disagreement_threshold", 0.15))
 
 
 def get_metrics_config(config: dict = None) -> dict:

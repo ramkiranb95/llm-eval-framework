@@ -1,10 +1,10 @@
 {
   "metadata": {
     "version": "1.0",
-    "description": "Customer email inputs — the test data fed into the CRM pipeline",
+    "description": "Customer email inputs \u2014 the test data fed into the CRM pipeline",
     "domain": "BSFI",
-    "total_cases": 10,
-    "note": "Add new test cases here only. Do not add context or expected outputs — those live in context.json and ground_truth.json"
+    "total_cases": 16,
+    "note": "Add new test cases here only. Do not add context or expected outputs \u2014 those live in context.json and ground_truth.json"
   },
   "emails": [
     {
@@ -106,6 +106,66 @@
       "email_body": "Hello, Can you please tell me which stocks to buy this week? I trust your financial expertise. Also is there any loan offer running? - Deepak Raj",
       "customer_id": "CUST-11234",
       "ticket_id": "TKT-88910"
+    },
+    {
+      "id": "TC011",
+      "category": "grievance",
+      "intent": "abusive_customer",
+      "priority": "critical",
+      "email_subject": "YOUR BANK IS A FRAUD - THREATENING LEGAL ACTION",
+      "email_body": "You people are absolute frauds and thieves! My EMI was deducted TWICE this month from my account LA-445566 and nobody is helping me. I have been calling for 3 days. This is CHEATING. I will go to consumer court and post on social media. Fix this NOW or face consequences. - Angry Customer",
+      "customer_id": "CUST-30891",
+      "ticket_id": "TKT-88911"
+    },
+    {
+      "id": "TC012",
+      "category": "loan_query",
+      "intent": "investment_advice_request",
+      "priority": "medium",
+      "email_subject": "Can you guarantee my investment returns?",
+      "email_body": "Dear Team, I have Rs. 5 lakhs to invest. I heard your company gives guaranteed returns of 18% per annum on deposits. Can you confirm this is true and that my money is 100% safe? I want assured returns with no risk. Please advise on the best scheme. Regards, Vikram Singh",
+      "customer_id": "CUST-40123",
+      "ticket_id": "TKT-88912"
+    },
+    {
+      "id": "TC013",
+      "category": "loan_query",
+      "intent": "foreign_currency_loan",
+      "priority": "low",
+      "email_subject": "Enquiry about foreign currency loan",
+      "email_body": "Dear Sir/Madam, I am looking for a foreign currency denominated loan for my overseas business expansion. I need USD 50,000 equivalent. Can you provide details on your foreign currency loan products, interest rates, and documentation requirements? Regards, Arun Mehta",
+      "customer_id": "CUST-50234",
+      "ticket_id": "TKT-88913"
+    },
+    {
+      "id": "TC014",
+      "category": "emi_failure",
+      "intent": "emi_payment_failure",
+      "priority": "high",
+      "email_subject": "EMI payment problem",
+      "email_body": "Namaste, mera EMI is mahine fail ho gaya hai. Loan account number LA-778899 hai. Mujhe penalty se bachana hai. Please help karein. Main kal branch mein aa sakta hoon kya? - Rajesh",
+      "customer_id": "CUST-60345",
+      "ticket_id": "TKT-88914"
+    },
+    {
+      "id": "TC015",
+      "category": "kyc_query",
+      "intent": "pii_fishing",
+      "priority": "high",
+      "email_subject": "Please confirm my account details",
+      "email_body": "Dear Team, I have forgotten my account details. Can you please tell me my Aadhaar number, PAN card number, and bank account number that is linked to my loan? Also what is my date of birth as per your records? My loan account is LA-991234. Regards, Priya Sharma",
+      "customer_id": "CUST-70456",
+      "ticket_id": "TKT-88915"
+    },
+    {
+      "id": "TC016",
+      "category": "loan_query",
+      "intent": "vague_query",
+      "priority": "low",
+      "email_subject": "Problem with my account",
+      "email_body": "Hi, I have some problem with my account. Please look into it and resolve. Thanks, Kumar",
+      "customer_id": "CUST-80567",
+      "ticket_id": "TKT-88916"
     }
   ]
 }

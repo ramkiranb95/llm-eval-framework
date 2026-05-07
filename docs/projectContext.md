@@ -103,10 +103,10 @@ API keys live in `.env` — no code changes needed to switch.
 |---|---|---|---|
 | `combined_evaluator` | combined | `langchain_openai.ChatOpenAI` | All providers via OpenAI-compatible endpoint |
 | `ragas_evaluator` | separate | `AsyncOpenAI` + `llm_factory` | All providers via OpenAI-compatible endpoint |
-| `deepeval_evaluator` | separate | `GeminiModel` (Gemini) or `OpenAICompatibleJudge` (Groq/Ollama) | Gemini uses native google-genai SDK |
+| `deepeval_evaluator` | separate | `OpenAICompatibleJudge` (Groq/Ollama) | Wraps any OpenAI-compatible endpoint as DeepEval judge |
 
 > RAGAs requires `InstructorLLM` (via `llm_factory`) — `LangchainLLMWrapper` is explicitly rejected.
-> DeepEval's `GeminiModel` requires `google-genai` package and `GEMINI_API_KEY` (not `GOOGLE_API_KEY`).
+> DeepEval batch API: `deepeval.evaluate([test_case], metrics)` runs all metrics in 1 API call — scores populated in-place on metric objects post-call.
 
 ---
 
@@ -142,16 +142,18 @@ Outgoing Reply + Ticket Status + Escalation Flag
 |---|---|---|
 | Language | Python 3.10+ | DeepEval/RAGAs native |
 | SUT LLM | Ollama (mistral) | Always local — this is what we're testing |
-| Judge LLM | Gemini 1.5 Flash (default) | Configurable: Gemini / Groq / Ollama |
-| RAG Evaluation | RAGAs 0.4.x | Uses LangChain wrappers for Gemini |
-| LLM Evaluation | DeepEval | Uses native GeminiModel for Gemini |
-| LLM Orchestration | LangChain | OllamaLLM for SUT, ChatOpenAI for Groq/Ollama judge |
-| Vector DB | ChromaDB (local) | Tier 2 — Tier 1 uses simulated context |
-| Embeddings | Google embedding-001 (Gemini) | Via LangChain GoogleGenerativeAIEmbeddings |
+| Judge LLM | Groq llama-3.3-70b (default) | Configurable: Groq / Gemini / Ollama via `config.yaml` |
+| RAG Evaluation | RAGAs 0.4.x | faithfulness, answer_relevance, context_precision, context_recall |
+| LLM Evaluation | DeepEval | hallucination, faithfulness, answer_relevancy, bias, toxicity, GEval custom |
+| Combined Evaluator | LangChain + custom prompt | All 7 LLM metrics in 1 Groq call — quota-efficient |
+| Semantic Similarity | bert-score + rouge-score | BERTScore (roberta-large), ROUGE-1/L — no LLM needed |
+| LLM Orchestration | LangChain | OllamaLLM for SUT, ChatOpenAI for judge |
+| Vector DB | ChromaDB (local) | Live mode active — `data/chroma_db/` |
+| Embeddings | all-MiniLM-L6-v2 (sentence-transformers) | chunk_size=256 words, chunk_overlap=40 |
 | Config | YAML | Human-readable, tester-editable |
 | Entry Point | playground.py | Hands-on single/batch case runner |
-| Test Runner | pytest | Full suite — Tier 2 |
-| Reporting | JSON + rich terminal | reports/ folder |
+| Test Runner | pytest | `tests/` — unit, integration, gate tests |
+| Reporting | JSON + rich terminal | `reports/` folder |
 
 ---
 
@@ -174,6 +176,7 @@ llm-eval-framework/
 │   ├── evaluationCoverage.md        ← all 15 metric categories
 │   ├── llmSyndromes.md              ← LLM bug taxonomy
 │   ├── conventions.md               ← naming rules, code structure, API patterns
+│   ├── codingStandards.md           ← PEP 8, Google Style Guide, Python docs — reference during coding and review
 │   └── learningLog.md               ← lessons from building and debugging
 ├── src/
 │   ├── utils/
@@ -182,18 +185,24 @@ llm-eval-framework/
 │   ├── pipeline/
 │   │   └── crm_responder.py         ← SUT: generates reply + ticket metadata
 │   ├── evaluators/
-│   │   ├── combined_evaluator.py    ← Tier 1: all 7 LLM metrics in 1 call (active)
-│   │   ├── custom_evaluator.py      ← Tier 1: ticket_status, escalation, key_facts (no LLM)
-│   │   └── experimental/            ← Tier 2: incomplete, not integrated
-│   │       ├── ragas_evaluator.py   ← faithfulness, answer_relevance (2 of 4 metrics)
-│   │       └── deepeval_evaluator.py← hallucination (1 of 3 metrics)
+│   │   ├── combined_evaluator.py    ← active: all 7 LLM metrics in 1 Groq call
+│   │   ├── custom_evaluator.py      ← deterministic: ticket_status, escalation, key_facts, bert_score, rouge
+│   │   └── experimental/            ← separate mode (ragas + deepeval independently)
+│   │       ├── ragas_evaluator.py   ← faithfulness, answer_relevance, context_precision, recall
+│   │       └── deepeval_evaluator.py← 7 core metrics + GEval (tone, OOS) + 4 RAGAs-equivalent
 │   ├── scoring/
 │   │   ├── threshold_checker.py     ← compare scores to thresholds
 │   │   └── release_gate.py          ← go/no-go gate based on critical metrics
 │   └── reporting/
 │       └── report_generator.py      ← terminal rich table + JSON report file
 ├── tests/
-│   └── __init__.py                  ← pytest suite (Tier 2 — pending)
+│   ├── __init__.py
+│   ├── conftest.py                  ← shared fixtures (config, pipeline_output)
+│   ├── test_custom_evaluator.py     ← deterministic evaluator tests (no LLM)
+│   ├── test_crm_responder.py        ← SUT integration tests (requires Ollama)
+│   ├── test_pipeline_gates.py       ← Gate 1 (email length) + Gate 2 (SUT validity) tests
+│   ├── test_semantic_similarity.py  ← BERTScore + ROUGE tests (no LLM)
+│   └── test_deepeval_metrics.py     ← DeepEval metric tests (requires_judge for Groq tests)
 ├── reports/                         ← generated JSON reports (git-ignored)
 ├── requirements.txt
 └── .env                             ← API keys (git-ignored)
@@ -237,19 +246,23 @@ playground.py
 ## Tier Breakdown
 
 ### Tier 1 — MVP (Active)
-- Simulated RAG (pre-retrieved context from context.json)
-- RAGAs: faithfulness, answer_relevance
-- DeepEval: hallucination
+- Simulated RAG (pre-retrieved context from context.json) + live ChromaDB (mode: "live")
+- Combined evaluator: faithfulness, answer_relevance, context_precision, context_recall, hallucination, answer_correctness, coherence — 1 Groq call
+- Semantic similarity: BERTScore (roberta-large) + ROUGE-1/L — no LLM
 - Custom: ticket_status_accuracy, escalation_logic, key_facts_coverage, out_of_scope_handling
+- Disagreement detection: flags internally inconsistent judge scores (faithfulness vs hallucination)
+- Pipeline gates: Gate 1 (min email length), Gate 2 (meta_parse_error or empty context)
 - playground.py runner + JSON report + release gate
+- pytest suite: 5 test files covering gates, custom evaluator, SUT integration, BERTScore, DeepEval
 
 ### Tier 2 — Next
-- Real ChromaDB with actual domain documents
+- Warning tier in release gate (critical/warning/monitor severity)
+- Ground truth realignment (TC003 highest drift risk)
+- Adversarial test cases (role override, PII fishing, scope boundary)
+- tone_empathy as 8th metric
 - Multi-intent test cases
-- Tone calibration metric
-- Adversarial / jailbreak test cases
-- Full pytest suite (tests/conftest.py + test_crm_responder.py)
 - Cross-lingual handling
+- Push to GitHub + 1-page portfolio case study
 
 ### Tier 3 — Future
 - Pluggable domain (new domain via config only)

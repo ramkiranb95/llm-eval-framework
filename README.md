@@ -58,10 +58,11 @@ pip install -r requirements.txt
 | Package | Purpose |
 |---|---|
 | `langchain`, `langchain-ollama`, `langchain-openai` | LLM orchestration |
-| `ragas` | RAG quality metrics (faithfulness, answer relevance) |
-| `deepeval` | LLM output quality metrics (hallucination) |
-| `sentence-transformers` | Local embeddings for key facts coverage |
-| `chromadb` | Vector DB (Tier 2 — installed but not active yet) |
+| `ragas` | RAG quality metrics (faithfulness, answer relevance, context precision/recall) |
+| `deepeval` | LLM evaluation — hallucination, faithfulness, GEval custom criteria |
+| `sentence-transformers` | Local embeddings — ChromaDB indexing + key facts coverage |
+| `rouge-score` | Lexical overlap — ROUGE-1, ROUGE-2, ROUGE-L — pure Python, no model |
+| `chromadb` | Vector DB — live RAG mode (`rag.mode: "live"` in config.yaml) |
 | `rich` | Terminal output formatting |
 | `python-dotenv` | API key loading from `.env` |
 
@@ -137,14 +138,18 @@ Runs automated evaluation of LLM responses across multiple quality dimensions:
 ```
 Test Input (email / query)
         ↓
-  RAG Pipeline (simulated or real ChromaDB)
+  Gate 1: email body length check (raises ValueError if too short)
         ↓
-  LLM Response — SUT (Ollama/mistral, local)
+  RAG Pipeline (simulated or live ChromaDB — config: rag.mode)
         ↓
-  Evaluation Layer — Judge LLM (Gemini / Groq / Ollama, configurable)
-    ├── RAGAs      → faithfulness, answer relevance
-    ├── DeepEval   → hallucination
-    └── Custom     → ticket status, escalation, key facts (no LLM)
+  SUT — Ollama/mistral (local, the model being tested)
+        ↓
+  Gate 2: skip LLM eval if meta_parse_error or empty context
+        ↓
+  Evaluation Layer
+    ├── Combined Evaluator → 7 LLM metrics in 1 Groq call
+    ├── Custom Evaluator   → ticket status, escalation, key facts (no LLM)
+    └── Semantic Similarity → BERTScore + ROUGE-1/L (no LLM)
         ↓
   Threshold Checker → pass / fail per metric
         ↓
@@ -162,12 +167,16 @@ Test Input (email / query)
 | Language | Python 3.10+ |
 | SUT LLM | Ollama (mistral) — local, the model being evaluated |
 | Judge LLM | Groq llama-3.3-70b (default) — configurable: Groq / Gemini / Ollama |
-| RAG Evaluation | RAGAs 0.4.x |
-| LLM Evaluation | DeepEval |
+| Combined Evaluator | LangChain + custom prompt — all 7 LLM metrics in 1 API call |
+| RAG Evaluation | RAGAs 0.4.x — faithfulness, answer_relevance, context precision/recall |
+| LLM Evaluation | DeepEval — hallucination, bias, toxicity, GEval custom criteria |
+| Semantic Similarity | bert-score + rouge-score — no LLM required |
+| Vector DB | ChromaDB (local) — live mode active |
+| Embeddings | all-MiniLM-L6-v2 (sentence-transformers) — chunk_size=256 words |
 | LLM Orchestration | LangChain |
 | Config | YAML |
 | Entry Point | playground.py |
-| Test Runner | pytest (Tier 2) |
+| Test Runner | pytest — 5 test files covering gates, evaluators, SUT integration |
 
 ---
 
@@ -222,6 +231,20 @@ python playground.py --all --save-report
 python playground.py --list
 ```
 
+```bash
+# Run all tests (no Ollama or Groq needed for most)
+pytest tests/ -v
+
+# Run only gate and deterministic tests (zero external dependencies)
+pytest tests/test_pipeline_gates.py tests/test_custom_evaluator.py tests/test_semantic_similarity.py -v
+
+# Run judge-dependent DeepEval tests (requires GROQ_API_KEY)
+pytest tests/test_deepeval_metrics.py -v -m requires_judge
+
+# Run SUT integration tests (requires Ollama running)
+pytest tests/test_crm_responder.py -v -m integration
+```
+
 ---
 
 ## Configuration
@@ -266,9 +289,9 @@ evaluation:
 
 ## Roadmap
 
-- **Tier 1 (MVP — active):** Simulated RAG, core metrics, playground runner, JSON report
-- **Tier 2:** Real ChromaDB, adversarial test cases, tone calibration, pytest suite
-- **Tier 3:** Pluggable domain, CI/CD via GitHub Actions, HTML dashboard, bias testing
+- **Tier 1 (active):** Simulated + live ChromaDB RAG, combined evaluator (7 LLM metrics, 1 API call), BERTScore + ROUGE, pipeline guardrails (Gate 1 + Gate 2), disagreement detection, pytest suite
+- **Tier 2:** Warning tier in release gate, adversarial test cases, tone_empathy metric, ground truth realignment, push to GitHub
+- **Tier 3:** Pluggable domain (new domain via config), CI/CD via GitHub Actions, HTML dashboard, bias testing suite
 - **Tier 4:** Production monitoring — traffic sampling, drift detection, score trending, alerting
 
 > Tier 3 gates releases. Tier 4 watches production after release. These are different systems — Tier 4 reuses the metric and scoring layer from Tier 1 but adds logging, scheduling, and alerting infrastructure.

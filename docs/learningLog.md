@@ -176,6 +176,145 @@ Treat standalone test scripts as a first-class consumer of the config schema.
 
 ---
 
+## L011 — Config is the only source of truth — no hardcoded values in code
+
+**Date:** 2026-05-02
+
+**What happened:**
+Phase A tech debt fixes initially had `timeout=30` and `temperature=0.0` hardcoded
+directly in `ChatOpenAI(...)`. These belong in `config.yaml` so they can be changed
+without touching code.
+
+**Fix:**
+Added `judge_timeout`, `judge_temperature`, `inter_case_delay_seconds` under the `llm`
+block in `config.yaml`, and a new `pipeline` block for `min_email_body_length` and
+`case_timeout_seconds`. `get_judge_config()` and the new `get_pipeline_config()` in
+`config_loader.py` surface these to callers. Nothing is hardcoded in evaluators or
+playground.
+
+**Lesson:**
+Any value a user might want to tune — timeouts, temperatures, delays, min lengths —
+belongs in `config.yaml`. Code only reads it. If a value appears as a literal in
+non-test code, it is a candidate for externalisation.
+
+---
+
+## L012 — Unused function parameters are a silent API smell
+
+**Date:** 2026-05-02
+
+**What happened:**
+`_skipped_llm_scores(reason, eval_mode, config)` was written with two parameters
+that were never accessed inside the function. The IDE flagged them immediately.
+These came from over-engineering the signature before thinking about what the
+function actually needed.
+
+**Lesson:**
+Write the function body first, then derive the signature from what is actually used.
+Don't add parameters speculatively. IDE hints for unused parameters are free code reviews
+— address them immediately before they accumulate.
+
+---
+
+## L013 — Embedding model choice is constrained by index-query consistency
+
+**Date:** 2026-05-04
+
+**What happened:**
+The original spec called for Google embedding-001 (Gemini) via LangChain for ChromaDB.
+When building Phase C (real ChromaDB), the question arose whether to follow the spec
+or use all-MiniLM-L6-v2 (sentence-transformers) which was already in use for
+key_facts_coverage in the custom evaluator.
+
+**Decision:** Use all-MiniLM-L6-v2 for ChromaDB embeddings.
+
+**Why:**
+The embedding model must be identical at index build time and query time — mixing
+models produces vectors in incompatible spaces and breaks retrieval entirely.
+Gemini embeddings would add an API dependency to the index build step, meaning
+the knowledge base cannot be rebuilt without network access and quota.
+Since Groq is the judge LLM (not Gemini), there is no end-to-end consistency
+argument for using Gemini embeddings. The retrieval quality difference does not
+justify the operational dependency.
+
+**Lesson:** When choosing an embedding model, the primary constraint is
+consistency — same model must be used everywhere the index is touched.
+The secondary constraint is operational: avoid external API dependencies on
+operations that need to be reproducible locally (index builds, CI runs).
+
+---
+
+## L015 — BERTScore has a high absolute floor — use relative ranking, not absolute gates for discrimination
+
+**Date:** 2026-05-07
+
+**What happened:**
+Tests that checked `bert_score_f1 < 0.82` for wrong/irrelevant replies failed.
+A weather forecast reply scored 0.86 against a loan eligibility reference.
+Two domain-adjacent financial replies (gold loan vs EMI failure) scored 0.84 against each other.
+BERTScore (roberta-large) assigns 0.82–0.87 to almost any pair of grammatical English sentences
+because roberta-large embeddings are dense and English sentences share structural/functional tokens.
+
+**Fix:**
+For wrong-reply discrimination: compare correct vs wrong reply scores against the same reference
+(relative ranking). The correct reply should always rank higher — that assertion holds.
+For absolute gating: BERTScore 0.82 threshold only catches empty output, non-English text,
+or deeply incoherent replies — not subtle topic drift.
+
+**Lesson:**
+BERTScore absolute thresholds gate catastrophic failures.
+Relative ranking (correct > wrong for same reference) is the meaningful discrimination test.
+ROUGE discriminates better on surface topic mismatch — use both together.
+
+---
+
+## L016 — ROUGE requires comparable-length reference and candidate
+
+**Date:** 2026-05-07
+
+**What happened:**
+ROUGE-L scored 0.093 for a full paragraph reply against a 7-word expected_reply summary
+("Confirm eligibility and list required documents."). ROUGE-L threshold of 0.30 failed.
+This is correct ROUGE behaviour — not a threshold calibration error.
+ROUGE measures word overlap as a fraction of the reference length. A short reference
+with different vocabulary from a long candidate produces near-zero scores by design.
+
+**Fix:**
+ROUGE threshold tests must use matched full-length reference and candidate strings.
+For production use: ground_truth.expected_reply must be a complete reference reply,
+not a summary phrase. Short summaries are only valid for BERTScore (semantic), not ROUGE (lexical).
+
+**Lesson:**
+Always match reference and candidate length when setting ROUGE thresholds.
+If your ground truth is a short summary, use BERTScore only.
+ROUGE is meaningful when reference and candidate are both complete responses.
+
+---
+
+## L014 — Dead config keys are silent lies
+
+**Date:** 2026-05-06
+
+**What happened:**
+`disagreement_threshold: 0.15` existed in config.yaml under the `llm` block but no code read it.
+An interviewer opening config.yaml could ask "what does this do?" and the honest answer was "nothing."
+Either implement it or delete it — dead config is worse than no config because it implies
+capability that doesn't exist.
+
+**Fix:**
+Implemented `_flag_disagreements()` in combined_evaluator.py. Faithfulness and hallucination
+measure opposite things — a reply faithful to context should have low hallucination. If both
+are high (or both low), the judge contradicts itself. The check: `abs(faithfulness + hallucination - 1.0) > threshold`.
+A `disagreement_warning` key is added to both score dicts when flagged. Score is not changed —
+only transparency is added for debugging.
+
+Also added `get_disagreement_threshold()` to config_loader.py so the key has a proper accessor.
+
+**Lesson:** Every key in config.yaml must be read somewhere in code. If it isn't, either build
+the feature or delete the key. Config is a contract — unused keys break the contract silently.
+
+---
+
 ## L006 — A model cannot reliably judge its own output
 
 **Date:** 2026-04-28
@@ -192,3 +331,84 @@ and evaluates, inflated scores are guaranteed and the evaluation is meaningless.
 Rule: `SUT ≠ Judge`.
 
 ---
+
+---
+
+## L017 — playground.py is the primary test runner, not pytest
+
+**Date:** 2026-05-07
+
+**What happened:**
+pytest test files were added (test_eval_cases.py) to wrap the 16 email cases,
+but this created confusion about what the "real" tests are.
+
+**Lesson:**
+`playground.py --all` is the primary end-to-end test runner for this project.
+It runs all 16 BSFI CRM cases through the full pipeline and is the first thing
+to get working correctly. pytest files (test_pipeline_gates.py,
+test_custom_evaluator.py, test_eval_cases.py) are supplementary — good for CI/CD
+and reporting but secondary to the playground working correctly.
+Priority order: playground working → pytest unit/integration tests.
+
+---
+
+## L018 — Every metric in LLM_METRICS must have a threshold in config.yaml
+
+**Date:** 2026-05-07
+
+**What happened:**
+8 new metrics were added to `combined_evaluator.py` (tone_professionalism,
+toxicity, non_advice, topic_adherence, bias, pii_leakage, role_adherence,
+answer_similarity) but were never added to `config/config.yaml` evaluation
+section. The playground showed "no threshold configured" for all of them —
+scores appeared but pass/fail was never evaluated.
+
+**Lesson:**
+Adding a metric requires changes in TWO places:
+1. `src/evaluators/combined_evaluator.py` — add to `LLM_METRICS` list and prompt
+2. `config/config.yaml` — add threshold, critical flag, enabled, description
+
+If a metric has no threshold in config, it scores but never passes or fails.
+It looks active but contributes nothing to the release gate. Always add both
+together. Checklist: metric in prompt → metric in LLM_METRICS → metric in config.
+
+---
+
+## L019 — Free tier API rate limits require SUT and judge on different providers
+
+**Date:** 2026-05-07
+
+**What happened:**
+Both SUT (llama-3.1-8b-instant) and judge (llama-3.3-70b-versatile) were on
+the same Groq API key. Each case makes 2 calls — SUT then judge — back to back.
+Groq free tier is 6,000 TPM. The judge eval prompt is ~3,700 tokens. After the
+SUT call, the judge call immediately hit the TPM limit with 429 errors on almost
+every case.
+
+**Lesson:**
+When SUT and judge share a provider, they compete for the same rate limit pool.
+Best split for free tier:
+- SUT: Groq (fast, low token per call, 30 RPM)
+- Judge: Gemini (1M TPM free, handles large eval prompts easily)
+This avoids TPM contention entirely. Also: Gemini free tier has daily RPD limits
+per model — if one model is exhausted, switch to another (e.g. gemini-2.5-flash-lite
+when gemini-2.0-flash-lite is exhausted).
+
+---
+
+## L020 — language_check must divide by alpha chars, not total chars
+
+**Date:** 2026-05-07
+
+**What happened:**
+language_check used `ascii_alpha / total_chars` to detect English. BSFI replies
+contain Rs., %, numbers, punctuation — all non-alpha characters. This dragged
+the ratio below 0.85 on every English reply, scoring 0.0 (non-English) for all
+16 cases including clearly English text.
+
+**Lesson:**
+Divide by total alphabetic characters, not total characters:
+`ascii_alpha / total_alpha`
+Punctuation, digits, currency symbols are not language indicators and must not
+penalise the ratio. This applies to any text heuristic that measures character
+class ratios in domain-specific content (financial, medical, legal).

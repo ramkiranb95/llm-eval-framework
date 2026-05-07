@@ -30,8 +30,10 @@ Standalone test:
 
 import json
 import re
-from langchain_ollama import OllamaLLM as Ollama
-from src.utils.config_loader import load_config, get_sut_config
+import time
+from langchain_openai import ChatOpenAI
+from openai import RateLimitError
+from src.utils.config_loader import load_config, get_sut_config, get_rag_config
 
 
 # ── System prompt — defines the persona of the CRM agent ────────────────────
@@ -87,12 +89,16 @@ Ticket status rules:
 
 # ── LLM caller ──────────────────────────────────────────────────────────────
 
-def _get_llm(model_name: str, base_url: str, temperature: float) -> Ollama:
-    """Create and return an Ollama LLM instance."""
-    return Ollama(
-        model=model_name,
-        base_url=base_url,
-        temperature=temperature
+def _get_llm(sut_cfg: dict) -> ChatOpenAI:
+    """
+    Create and return a ChatOpenAI instance for the configured SUT provider.
+    Gemini, Groq, and Ollama all expose an OpenAI-compatible endpoint.
+    """
+    return ChatOpenAI(
+        model       = sut_cfg["model"],
+        base_url    = sut_cfg["base_url"],
+        api_key     = sut_cfg["api_key"],
+        temperature = sut_cfg["temperature"],
     )
 
 
@@ -179,30 +185,49 @@ def generate_response(test_case: dict, config: dict) -> dict:
             ground_truth        : original ground truth (pass-through for evaluators)
     """
     sut_cfg  = get_sut_config(config)
-    base_url = sut_cfg["base_url"]
-    temp     = sut_cfg["temperature"]
+    provider = sut_cfg["provider"]
     model    = sut_cfg["model"]
 
-    # data_loader returns a flat dict — access fields directly
-    context = test_case["retrieved_chunks"]
+    rag_cfg  = get_rag_config(config)
+    rag_mode = rag_cfg.get("mode", "simulated")
 
-    print(f"\n  → Generating reply + ticket prediction with {model} (single call)...")
+    if rag_mode == "live":
+        from src.rag.retriever import retrieve
+        context = retrieve(test_case["email_body"], config)
+        print(f"  → RAG mode: live — retrieved {len(context)} chunks from ChromaDB")
+    else:
+        # simulated: pre-filled context from context.json (default, all existing tests pass)
+        context = test_case["retrieved_chunks"]
+
+    print(f"\n  → Generating reply + ticket prediction with {provider}/{model} (single call)...")
 
     # ONE call — reply and ticket metadata together
-    llm    = _get_llm(model, base_url, temp)
+    llm    = _get_llm(sut_cfg)
     prompt = _build_combined_prompt(
         test_case["email_subject"], test_case["email_body"], context
     )
-    try:
-        raw_output = llm.invoke(prompt).strip()
-    except Exception as e:
-        if "Connection refused" in str(e) or "ConnectError" in type(e).__name__:
-            raise RuntimeError(
-                f"Cannot connect to Ollama at {base_url}\n"
-                f"  Make sure Ollama is running: ollama serve\n"
-                f"  Then check the model is pulled: ollama pull {model}"
-            ) from e
-        raise
+    # Retry up to 3 times on transient rate limit errors (Cerebras queue_exceeded, Groq 429)
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            raw_output = llm.invoke(prompt).content.strip()
+            break
+        except RateLimitError as e:
+            if attempt == max_retries:
+                raise RuntimeError(
+                    f"SUT rate limit hit after {max_retries} retries — {type(e).__name__}: {str(e)[:120]}"
+                ) from e
+            wait = 15 * attempt  # 15s, 30s, 45s
+            print(f"  [rate limit] SUT 429 on attempt {attempt}/{max_retries} — retrying in {wait}s...")
+            time.sleep(wait)
+        except Exception as e:
+            if provider == "ollama" and ("Connection refused" in str(e) or "ConnectError" in type(e).__name__):
+                raise RuntimeError(
+                    f"Cannot connect to Ollama at {sut_cfg['base_url']}\n"
+                    f"  Make sure Ollama is running: ollama serve\n"
+                    f"  Then check the model is pulled: ollama pull {model}"
+                ) from e
+            raise
     generated_reply, ticket_result = _parse_combined_output(raw_output)
 
     # Validate ticket_status is one of the 4 allowed values
@@ -260,7 +285,7 @@ if __name__ == "__main__":
     console.print(f"\n[bold cyan]╔══ CRM RESPONDER — SMOKE TEST (TC001) ══╗[/bold cyan]")
     console.print(f"[bold]Case:[/bold]     {test_case['id']} — {test_case['intent']}")
     console.print(f"[bold]Email:[/bold]    {test_case['email_subject']}")
-    console.print(f"[bold]Model:[/bold]    {config['llm']['sut_model']}\n")
+    console.print(f"[bold]Provider:[/bold] {config['llm'].get('sut_provider', 'ollama')} / {config['llm']['sut_model']}\n")
 
     result = generate_response(test_case, config)
 
