@@ -245,17 +245,20 @@ def get_pipeline_config(config: dict = None) -> dict:
     Returns pipeline validation configuration.
 
     Keys:
-        min_email_body_length : int  — emails shorter than this skip the AI workflow
-        case_timeout_seconds  : int  — per-case wall-clock timeout for generate_response()
-        inter_case_delay_seconds : int — pause between cases on --all runs
+        min_email_body_length          : int   — emails shorter than this skip the AI workflow
+        case_timeout_seconds           : int   — per-case wall-clock timeout for generate_response()
+        inter_case_delay_seconds       : int   — pause between cases on --all runs (pipeline section in config.yaml)
+        language_check_ascii_threshold : float — Gate 1 input language check; below = non-English → skip LLM
+        restricted_phrases             : list  — phrases checked against generated reply (post-LLM)
     """
     config = config or load_config()
     pipeline = config.get("pipeline", {})
-    llm      = config.get("llm", {})
     return {
-        "min_email_body_length"  : pipeline.get("min_email_body_length", 50),
-        "case_timeout_seconds"   : pipeline.get("case_timeout_seconds", 120),
-        "inter_case_delay_seconds": llm.get("inter_case_delay_seconds", 2),
+        "min_email_body_length"         : pipeline.get("min_email_body_length", 50),
+        "case_timeout_seconds"          : pipeline.get("case_timeout_seconds", 120),
+        "inter_case_delay_seconds"      : pipeline.get("inter_case_delay_seconds", 5),
+        "language_check_ascii_threshold": pipeline.get("language_check_ascii_threshold", 0.85),
+        "restricted_phrases"            : pipeline.get("restricted_phrases", []),
     }
 
 

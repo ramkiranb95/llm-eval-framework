@@ -100,7 +100,6 @@ def build_index(config: dict = None) -> int:
     config     = config or load_config()
     rag_cfg    = get_rag_config(config)
     model_name = rag_cfg["embedding_model"]
-    top_k      = rag_cfg["top_k"]
     chunk_size  = rag_cfg["chunk_size"]
     chunk_overlap = rag_cfg["chunk_overlap"]
 
@@ -151,19 +150,6 @@ def build_index(config: dict = None) -> int:
 
     # ChromaDB has a batch size limit — add in batches of 500
     batch_size = 500
-    for start in range(0, len(all_chunks), batch_size):
-        end = start + batch_size
-        collection.add(
-            documents=all_ids[start:end],   # stored as document ID string
-            embeddings=embeddings[start:end],
-            ids=all_ids[start:end],
-            metadatas=all_metadata[start:end],
-        )
-
-    # Store the actual text in metadata so we can retrieve it back
-    # ChromaDB's `documents` field is meant for the text — rebuild with correct field
-    client.delete_collection(COLLECTION_NAME)
-    collection = client.create_collection(COLLECTION_NAME)
     for start in range(0, len(all_chunks), batch_size):
         end = start + batch_size
         collection.add(

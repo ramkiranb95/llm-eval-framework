@@ -141,11 +141,11 @@ Outgoing Reply + Ticket Status + Escalation Flag
 | Component | Tool | Notes |
 |---|---|---|
 | Language | Python 3.10+ | DeepEval/RAGAs native |
-| SUT LLM | Ollama (mistral) | Always local — this is what we're testing |
-| Judge LLM | Groq llama-3.3-70b (default) | Configurable: Groq / Gemini / Ollama via `config.yaml` |
+| SUT LLM | Configurable via config.yaml — currently Cerebras llama3.1-8b | Always configurable — this is what we're testing |
+| Judge LLM | Gemini gemini-2.0-flash (default) | Configurable: Groq / Gemini / Ollama via `config.yaml` |
 | RAG Evaluation | RAGAs 0.4.x | faithfulness, answer_relevance, context_precision, context_recall |
 | LLM Evaluation | DeepEval | hallucination, faithfulness, answer_relevancy, bias, toxicity, GEval custom |
-| Combined Evaluator | LangChain + custom prompt | All 7 LLM metrics in 1 Groq call — quota-efficient |
+| Combined Evaluator | LangChain + custom prompt | All 15 LLM metrics in 1 API call — framework-sourced metric definitions |
 | Semantic Similarity | bert-score + rouge-score | BERTScore (roberta-large), ROUGE-1/L — no LLM needed |
 | LLM Orchestration | LangChain | OllamaLLM for SUT, ChatOpenAI for judge |
 | Vector DB | ChromaDB (local) | Live mode active — `data/chroma_db/` |
@@ -168,7 +168,7 @@ llm-eval-framework/
 ├── data/
 │   ├── emails.json                  ← customer email inputs (TC001–TC010)
 │   ├── context.json                 ← retrieved context chunks per case (simulated RAG)
-│   ├── ground_truth.json            ← expected outputs + per-case threshold overrides
+│   ├── ground_truth.json            ← expected outputs and validation metadata
 │   └── policy_docs/                 ← domain policy documents (Tier 2)
 ├── docs/
 │   ├── projectContext.md            ← this file — architecture, decisions, structure
@@ -185,7 +185,7 @@ llm-eval-framework/
 │   ├── pipeline/
 │   │   └── crm_responder.py         ← SUT: generates reply + ticket metadata
 │   ├── evaluators/
-│   │   ├── combined_evaluator.py    ← active: all 7 LLM metrics in 1 Groq call
+│   │   ├── combined_evaluator.py    ← active: all 15 LLM metrics in 1 API call — framework-sourced definitions
 │   │   ├── custom_evaluator.py      ← deterministic: ticket_status, escalation, key_facts, bert_score, rouge
 │   │   └── experimental/            ← separate mode (ragas + deepeval independently)
 │   │       ├── ragas_evaluator.py   ← faithfulness, answer_relevance, context_precision, recall
@@ -197,12 +197,12 @@ llm-eval-framework/
 │       └── report_generator.py      ← terminal rich table + JSON report file
 ├── tests/
 │   ├── __init__.py
-│   ├── conftest.py                  ← shared fixtures (config, pipeline_output)
-│   ├── test_custom_evaluator.py     ← deterministic evaluator tests (no LLM)
-│   ├── test_crm_responder.py        ← SUT integration tests (requires Ollama)
-│   ├── test_pipeline_gates.py       ← Gate 1 (email length) + Gate 2 (SUT validity) tests
-│   ├── test_semantic_similarity.py  ← BERTScore + ROUGE tests (no LLM)
-│   └── test_deepeval_metrics.py     ← DeepEval metric tests (requires_judge for Groq tests)
+│   ├── conftest.py                  ← session fixtures: pipeline_results (all 16 TCs), tc013_simulated, mock fixtures for unit tests
+│   ├── test_eval_cases.py           ← 21 parametrized tests — 1 per TC, all metrics via soft assertions, Allure attachments
+│   ├── test_custom_evaluator.py     ← deterministic evaluator unit tests (no LLM)
+│   ├── test_crm_responder.py        ← SUT integration tests (requires running SUT provider)
+│   ├── test_pipeline_gates.py       ← Gate 1 (email length, language) + Gate 2 (empty context) tests
+│   └── test_semantic_similarity.py  ← key_facts_coverage embedding tests (no LLM)
 ├── reports/                         ← generated JSON reports (git-ignored)
 ├── requirements.txt
 └── .env                             ← API keys (git-ignored)
@@ -222,12 +222,13 @@ evaluation:
 
 | Mode | LLM calls per case | Metrics covered | When to use |
 |---|---|---|---|
-| `combined` | 1 | All 7 LLM metrics in one prompt | Batch runs, rate-limited APIs, fast feedback |
-| `separate` | ~10 | Same 7 metrics via RAGAs + DeepEval | Deep analysis, rigorous multi-step scoring |
+| `combined` | 1 | All 15 LLM metrics in one prompt | Batch runs, rate-limited APIs, fast feedback |
+| `separate` | ~12 | Same metrics via RAGAs + DeepEval (overlapping subset) | Deep analysis, rigorous multi-step scoring |
 
 **Combined covers (1 call):**
 faithfulness, answer_relevance, context_precision, context_recall,
-hallucination, answer_correctness, coherence
+hallucination, answer_correctness, coherence, tone_professionalism, toxicity,
+non_advice, topic_adherence, bias, role_adherence, pii_leakage, answer_similarity (15 metrics)
 
 **Always deterministic (no LLM, unaffected by mode):**
 ticket_status_accuracy, escalation_logic, key_facts_coverage, out_of_scope_handling
@@ -291,30 +292,26 @@ playground.py
 
 Known gaps deferred from Tier 1. Must be resolved before Tier 2 batch runs and CI/CD integration.
 
-### 1. No Timeout on Judge LLM Call
+### 1. ~~No Timeout on Judge LLM Call~~ — RESOLVED
 **File:** `src/evaluators/combined_evaluator.py`
-**Gap:** `ChatOpenAI` is initialised with no `timeout` parameter. A hung Groq or Gemini request blocks the entire run indefinitely.
-**Fix:** Set `timeout=30` on `ChatOpenAI(...)`. Catch `TimeoutError` and return `{"score": None, "error": "judge LLM timed out"}` per metric — do not retry, move to next case.
+**Resolution:** `judge_timeout: 30` added to `config.yaml`. Passed to `ChatOpenAI(timeout=...)` via `get_judge_config()`.
 
-### 2. No Rate Limit Error Handling
+### 2. ~~No Rate Limit Error Handling~~ — RESOLVED
 **File:** `src/evaluators/combined_evaluator.py`
-**Gap:** A `429 RateLimitError` from Groq/Gemini mid-run fails the case silently or with a raw stacktrace. No inter-case delay between back-to-back API calls on `--all` runs.
-**Fix:** Catch `429` / `RateLimitError` explicitly — log the error, mark all metrics for that case as `{"score": None, "error": "rate limit hit — case skipped"}`, and continue. No retry (avoids extra cost). Add a configurable `inter_case_delay_seconds` in `config.yaml` (default 2s) to reduce RPM pressure on `--all` runs.
+**Resolution:** `inter_case_delay_seconds` added to `config.yaml` (currently 5s for Cerebras 60K TPM). `RuntimeError` from rate limit is caught in conftest `pipeline_results` fixture — case marked failed and run continues.
 
-### 3. No Confidence Gate — LLM Called Regardless of SUT Output Quality
+### 3. ~~No Confidence Gate — LLM Called Regardless of SUT Output Quality~~ — RESOLVED
 **File:** `playground.py`
-**Gap:** The judge LLM is called even when the SUT output is invalid — empty reply, META parse error, or empty retrieved context. Evaluating a failed SUT output wastes an API call and produces meaningless scores.
-**Fix:** Before calling the evaluator, check `pipeline_output["meta_parse_error"]` and `len(pipeline_output["retrieved_context"]) == 0`. If either is true, skip the LLM eval call entirely and mark all LLM metrics as `{"score": None, "error": "skipped — SUT output invalid"}`.
+**Resolution:** Gate 2 implemented. Checks `meta_parse_error` and empty `retrieved_context` before calling the judge. All LLM metrics marked null if gate fires.
 
 ### 4. Embedding Encode Calls Not Batched
 **File:** `src/evaluators/custom_evaluator.py`
 **Gap:** `_key_facts_coverage()` calls `model.encode()` twice per case — once for reply sentences, once for key facts. Batching both into one call halves CPU time.
 **Fix:** Combine sentences and facts into one list, call `model.encode()` once, then slice the result by length.
 
-### 5. No Per-Case Timeout in Playground
+### 5. ~~No Per-Case Timeout in Playground~~ — RESOLVED
 **File:** `playground.py`
-**Gap:** If Ollama hangs mid-generation, the entire `--all` run blocks on that one case indefinitely.
-**Fix:** Wrap `generate_response()` in a `concurrent.futures.ThreadPoolExecutor` with a per-case wall-clock timeout. On timeout, record the case as failed and continue.
+**Resolution:** `generate_response()` wrapped in `concurrent.futures.ThreadPoolExecutor` with `case_timeout_seconds` from `config.yaml`. On timeout, case is recorded as failed and run continues.
 
 ### 6. No Fallback if Embedding Model Fails to Load
 **File:** `src/evaluators/custom_evaluator.py`
@@ -344,9 +341,9 @@ Known gaps deferred from Tier 1. Must be resolved before Tier 2 batch runs and C
 
 ## Test Dataset Summary
 
-10 synthetic test cases — each with input email, retrieved context,
+16 synthetic test cases — each with input email, retrieved context,
 ground truth reply, expected ticket status, escalation flag, tone,
-key facts, and per-case threshold overrides.
+and key facts. All cases use global thresholds from `config.yaml`.
 
 | ID | Category | Intent |
 |---|---|---|
@@ -360,3 +357,97 @@ key facts, and per-case threshold overrides.
 | TC008 | grievance | Mis-selling complaint |
 | TC009 | kyc_query | Nominee update |
 | TC010 | loan_query | Out-of-scope query |
+| TC011 | grievance | Duplicate EMI deduction |
+| TC012 | grievance | Guaranteed returns mis-selling |
+| TC013 | edge_case | Empty context (Gate 2 trigger) |
+| TC014 | edge_case | Non-English input (Gate 1 trigger) |
+| TC015 | kyc_query | PII leakage risk |
+| TC016 | edge_case | Vague query — insufficient info |
+
+---
+
+## Future Roadmap
+
+### Multiple Test Suite Structure (`planned`)
+
+**Why:** All 16 cases currently share one global config. A compliance grievance (TC003)
+and a standard KYC query (TC005) should not be held to the same thresholds.
+Per-case `evaluation_overrides` were removed — they were the wrong abstraction.
+The right answer is separate suites with separate configs.
+
+**Decision:** Do not add per-case exceptions to any shared data file. If a group of
+cases needs different thresholds, create a new suite. This is the reference for all
+future test data work.
+
+**Target structure:**
+```
+data/
+  suites/
+    standard/
+      emails.json
+      context.json
+      ground_truth.json
+      config.yaml          # standard thresholds (faithfulness >= 0.75)
+
+    compliance/
+      emails.json
+      context.json
+      ground_truth.json
+      config.yaml          # strict thresholds (faithfulness >= 0.90, hallucination <= 0.05)
+
+    multilingual/
+      emails.json          # non-English inputs
+      context.json
+      ground_truth.json
+      config.yaml
+
+    adversarial/
+      emails.json          # role override, PII fishing, scope boundary cases
+      context.json
+      ground_truth.json
+      config.yaml
+```
+
+**How playground would run it:**
+```
+python playground.py --suite compliance --all
+python playground.py --suite standard TC001 TC005
+```
+
+---
+
+### Risk Score Aggregator (`planned`)
+
+A single composite signal computed from existing metric scores — no new LLM call.
+
+```
+risk_score = w1 * (1 - faithfulness)
+           + w2 * hallucination
+           + w3 * toxicity
+           + w4 * (1 - pii_leakage)
+           + w5 * (1 - non_advice)
+```
+
+Weights configurable per suite in config.yaml. `risk_score > 0.4` → human review queue.
+
+---
+
+### Retrieval Confidence Signal (`idea`)
+
+ChromaDB already returns a `distances` field per retrieved chunk (see `retriever.py:224`)
+but it is currently discarded. Low distance = high relevance. Could feed into risk score
+as a retrieval quality signal before any LLM scoring happens.
+
+---
+
+### Coding Standards for Future Work
+
+These decisions were made during Tier 1 and must carry forward:
+
+1. **No per-case exceptions in shared data** — create a new suite, not an override field.
+2. **Config-driven, not hardcoded** — restricted phrases, thresholds, language threshold all live in `config.yaml`.
+3. **Gate 1 = deterministic input checks only** — length, language, format. Never send to LLM first if the check is free.
+4. **language_check runs twice by design** — input (Gate 1, saves tokens) and output (custom evaluator, catches bot errors).
+5. **restricted_words is output-only** — input check produces false positives on customer complaints.
+6. **judge_temperature = 0.0 always** — eval must be deterministic. SUT temperature can be > 0.
+7. **Per-metric reasoning on every score** — the judge returns `<metric>_reason` for all 15 metrics. When a metric fails, the reason must be visible without re-running.

@@ -4,7 +4,6 @@
 # ============================================================
 
 # -- CORE LLM & API ------------------------------------------
-anthropic>=0.25.0
 openai>=1.12.0
 
 # -- RAG EVALUATION ------------------------------------------
@@ -20,7 +19,6 @@ pypdf>=4.0.0
 # -- RAG PIPELINE --------------------------------------------
 langchain>=0.1.0
 langchain-community>=0.0.20
-langchain-anthropic>=0.1.0
 
 # -- VECTOR DATABASE -----------------------------------------
 chromadb>=0.4.22
@@ -39,6 +37,8 @@ python-dotenv>=1.0.1
 pytest>=7.4.4
 pytest-asyncio>=0.23.0
 pytest-html>=4.1.1
+pytest-check>=2.3.1
+allure-pytest>=2.13.5
 
 # -- SEMANTIC SIMILARITY METRICS -----------------------------
 rouge-score>=0.1.2

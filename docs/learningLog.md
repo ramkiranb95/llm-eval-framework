@@ -412,3 +412,50 @@ Divide by total alphabetic characters, not total characters:
 Punctuation, digits, currency symbols are not language indicators and must not
 penalise the ratio. This applies to any text heuristic that measures character
 class ratios in domain-specific content (financial, medical, legal).
+
+---
+
+## L021 — Combined evaluator expanded from 7 to 15 metrics with framework-sourced definitions
+
+**Date:** 2026-05-09
+
+- What changed: LLM_METRICS list grew from 7 to 15. 8 new metrics added: tone_professionalism, toxicity, non_advice, topic_adherence, bias, role_adherence, pii_leakage, answer_similarity
+- Each metric definition is now a module-level string constant sourced from official RAGAs/DeepEval framework logic — not a vague label. This means the Judge LLM applies the same reasoning the actual frameworks would use in separate mode.
+- FRAMEWORK_MAP added to map each metric to its source (RAGAs, DeepEval, or BSFI_Custom) for display and traceability
+- INVERTED_METRICS updated: hallucination and toxicity — lower is better for both
+- Still 1 Judge LLM API call — all 15 metrics in one structured prompt
+
+---
+
+## L022 — RAGAs evaluator now complete: all 4 metrics implemented
+
+**Date:** 2026-05-09
+
+- context_precision and context_recall were missing from ragas_evaluator.py
+- context_precision measures retrieval signal-to-noise: are the top-ranked chunks actually relevant to the ground truth answer? Uses: user_input, retrieved_contexts, reference
+- context_recall measures coverage: did the retriever surface all the facts needed to produce the expected answer? Uses: retrieved_contexts, reference
+- reference = ground_truth["expected_reply"] — ground truth is what defines what "should" have been retrieved
+- Both use RAGAs 0.4.x ContextPrecision / ContextRecall from collections API via llm_factory + AsyncOpenAI — same pattern as faithfulness and answer_relevance
+
+---
+
+## L023 — Separate mode wired in playground.py — RAGAs + DeepEval now callable
+
+**Date:** 2026-05-09
+
+- evaluation.mode: "separate" no longer raises NotImplementedError
+- Calls ragas_evaluator.evaluate() and deepeval_evaluator.evaluate() independently, merges results
+- RAGAs takes precedence on overlapping metrics (faithfulness, answer_relevance) — multi-step claim decomposition is more rigorous than single-pass DeepEval judge
+- Key alias: DeepEval returns "answer_relevancy", canonical name in LLM_METRICS is "answer_relevance" — alias map prevents key mismatch silently corrupting the merge
+- Metrics not covered by either library get score: None with a clear error message — no crash, no silent gaps
+- Combined mode: 2 API calls/case (1 SUT + 1 Judge). Separate mode: ~12 API calls/case (1 SUT + ~4 RAGAs + ~7 DeepEval). Use separate only for single-case deep analysis, not batch runs.
+
+---
+
+## L024 — verbose=False is mandatory for pytest — never pass print() output to test runner
+
+**Date:** 2026-05-09
+
+- crm_responder.generate_response() and _parse_combined_output() now accept verbose parameter (default True)
+- pytest conftest passes verbose=False to run_case() — print() calls are gated behind if verbose:
+- Lesson: test runners capture stdout. Print statements from the SUT pipeline appear in pytest -s output and obscure test failure messages. Always gate debug prints behind a verbose flag in any code that runs inside a test suite.

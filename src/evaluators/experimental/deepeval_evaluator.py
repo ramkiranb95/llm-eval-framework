@@ -50,6 +50,7 @@ class OpenAICompatibleJudge(DeepEvalBaseLLM):
     """
     Wraps any OpenAI-compatible endpoint (Groq, Ollama /v1, Gemini) as a DeepEval judge.
     DeepEval requires generate() and a_generate() — both are implemented.
+    The ChatOpenAI client is created once and cached on the instance.
     """
 
     def __init__(self, model_name: str, base_url: str, api_key: str, temperature: float = 0.0):
@@ -57,20 +58,24 @@ class OpenAICompatibleJudge(DeepEvalBaseLLM):
         self._base_url    = base_url
         self._api_key     = api_key
         self._temperature = temperature
+        self._client: ChatOpenAI | None = None
 
-    def load_model(self):
-        return ChatOpenAI(
-            model       = self._model_name,
-            base_url    = self._base_url,
-            api_key     = self._api_key,
-            temperature = self._temperature,
-        )
+    def load_model(self) -> ChatOpenAI:
+        if self._client is None:
+            self._client = ChatOpenAI(
+                model       = self._model_name,
+                base_url    = self._base_url,
+                api_key     = self._api_key,
+                temperature = self._temperature,
+            )
+        return self._client
 
     def generate(self, prompt: str, *args, **kwargs) -> str:
         return self.load_model().invoke(prompt).content
 
     async def a_generate(self, prompt: str, *args, **kwargs) -> str:
-        return self.generate(prompt)
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.generate, prompt)
 
     def get_model_name(self) -> str:
         return self._model_name
@@ -354,7 +359,7 @@ if __name__ == "__main__":
     table.add_column("Direction",       width=14)
     table.add_column("Reason",          width=46)
 
-    INVERTED = {"hallucination", "bias", "toxicity"}
+    INVERTED = {"hallucination", "toxicity"}
     for metric, data in scores.items():
         score  = data.get("score")
         error  = data.get("error")

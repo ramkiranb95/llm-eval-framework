@@ -198,7 +198,6 @@ def save_json_report(
             "ground_truth"            : po.get("ground_truth", {}),
             "validation_focus"        : po.get("validation_focus", []),
             "llm_syndrome_watch"      : po.get("llm_syndrome_watch", ""),
-            "evaluation_overrides"    : po.get("evaluation_overrides", {}),
             "metrics"                 : {
                 k: v for k, v in threshold_result.items() if k != "id"
             }
@@ -259,21 +258,19 @@ if __name__ == "__main__":
             "id": "TC001", "category": "loan_query", "intent": "loan_eligibility_query",
             "generated_reply": "Dear Ramesh, you are eligible for a loan. Documents: salary slips, bank statements. Regards, CX Team",
             "predicted_ticket_status": "in_progress", "predicted_escalation": False,
-            "ticket_reasoning": "Standard query", "model_used": "llama3.2:3b",
+            "ticket_reasoning": "Standard query", "model_used": "sut-model",
             "ground_truth": {"expected_ticket_status": "in_progress", "expected_escalation": False,
                              "expected_reply": "...", "expected_tone": "helpful", "key_facts_to_include": []},
             "validation_focus": ["Cat-1: coherence"], "llm_syndrome_watch": "confabulation",
-            "evaluation_overrides": {}
         },
         {
             "id": "TC008", "category": "grievance", "intent": "mis_selling_complaint",
             "generated_reply": "Dear Ravi, we apologise. Grievance ref: GRV-88908. GRO will contact you. Regards, CX Team",
             "predicted_ticket_status": "escalated", "predicted_escalation": True,
-            "ticket_reasoning": "Escalated to GRO", "model_used": "llama3.2:3b",
+            "ticket_reasoning": "Escalated to GRO", "model_used": "sut-model",
             "ground_truth": {"expected_ticket_status": "escalated", "expected_escalation": True,
                              "expected_reply": "...", "expected_tone": "empathetic_formal", "key_facts_to_include": []},
             "validation_focus": ["Cat-2: faithfulness"], "llm_syndrome_watch": "confabulation",
-            "evaluation_overrides": {"faithfulness_threshold": 0.90}
         }
     ]
 

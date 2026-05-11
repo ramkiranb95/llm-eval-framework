@@ -3,25 +3,32 @@ test_eval_cases.py
 ------------------
 End-to-end integration tests for all 16 BSFI CRM test cases.
 
-Each test case runs the full pipeline:
-    1. Email → CRM responder (Ollama SUT) → generated reply
+Pipeline (executed once per TC via the session-scoped pipeline_results fixture):
+    1. Email → CRM responder (SUT) → generated reply
     2. Custom evaluator (deterministic) → ticket_status, escalation, key_facts, etc.
-    3. Combined LLM evaluator (Groq judge) → faithfulness, hallucination, etc.
+    3. Combined LLM evaluator (Judge LLM) → faithfulness, hallucination, etc.
     4. Threshold checker → pass/fail per metric
-    5. Assert: all critical metrics must pass their configured thresholds
 
-Why this file exists alongside playground.py:
-    playground.py  — developer sandbox, rich terminal output, interactive use
-    test_eval_cases.py — formal pytest suite, CI/CD gate, pytest-html reportable
+Test structure:
+    test_all_metrics[TCxxx]     — one test per TC; soft-asserts every metric in a
+                                   single execution. All failures surfaced together.
+    Targeted standalone tests   — TC010, TC012, TC013, TC014, TC015 edge-case behaviour.
 
-Markers:
-    integration — requires Ollama running locally and Groq API key in .env
+Why soft assertions (pytest-check):
+    Hard assert stops at the first failure — you see one broken metric and nothing else.
+    Soft assertions accumulate all failures and report them together, giving the AI
+    team the full per-metric picture in one test run.
 
-Run all integration tests with HTML report:
-    pytest tests/test_eval_cases.py -v --html=reports/report.html --self-contained-html
+Report commands:
+    Allure (full dashboard — recommended for team sharing):
+        pytest tests/test_eval_cases.py -v --alluredir=reports/allure-results
+        allure serve reports/allure-results
 
-Skip integration tests (no Ollama needed):
-    pytest tests/ -m "not integration" -v
+    HTML (quick local view):
+        pytest tests/test_eval_cases.py -v --html=reports/report.html --self-contained-html
+
+    Skip integration tests (unit tests only, no SUT needed):
+        pytest tests/ -m "not integration" -v
 
 Test case coverage:
     TC001 — Loan eligibility query
@@ -43,269 +50,277 @@ Test case coverage:
 """
 
 import pytest
-from playground import run_case
-from src.utils.data_loader import get_case_by_id
-from src.utils.config_loader import load_config
+import pytest_check as check
+import allure
+
+from src.utils.data_loader import load_test_cases
 from src.evaluators.combined_evaluator import LLM_METRICS
 
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# ── Case IDs — derived from data layer, not hardcoded ─────────────────────────
+# Collected at module import time. load_test_cases() reads from data/*.json —
+# no LLM call here, just file I/O. IDs stay in sync with the data files.
 
-@pytest.fixture(scope="module")
-def config():
-    return load_config()
-
-
-# ── Case definitions ──────────────────────────────────────────────────────────
-
-ALL_CASES = [
-    ("TC001", "loan eligibility query"),
-    ("TC002", "EMI payment failure"),
-    ("TC003", "interest rate grievance — escalation"),
-    ("TC004", "loan foreclosure request"),
-    ("TC005", "KYC address update"),
-    ("TC006", "business loan status check"),
-    ("TC007", "financial hardship moratorium — escalation"),
-    ("TC008", "processing fee complaint — escalation"),
-    ("TC009", "nominee addition"),
-    ("TC010", "out-of-scope + in-scope dual intent"),
-    ("TC011", "duplicate EMI deduction — escalation"),
-    ("TC012", "guaranteed returns query — out-of-scope"),
-    ("TC013", "Gate 2 empty context behaviour"),
-    ("TC014", "non-English email language routing"),
-    ("TC015", "PII leakage prevention"),
-    ("TC016", "vague ambiguous loan query"),
-]
+_ALL_CASE_IDS = [c["id"] for c in load_test_cases()]
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Metric display helpers ────────────────────────────────────────────────────
 
-def _critical_failures(threshold_result: dict) -> list[str]:
-    """
-    Return failure strings for all critical metrics that did not pass.
-    score=None (Gate 2 skipped) is not counted as a failure — it is expected
-    behaviour for cases like TC013 where context is intentionally empty.
-    """
-    failures = []
+def _score_line(metric: str, data: dict) -> str:
+    """Format one metric row for failure messages and Allure attachments."""
+    score     = data.get("score")
+    threshold = data.get("threshold")
+    passed    = data.get("passed")
+    critical  = data.get("critical", False)
+    notes     = data.get("notes") or data.get("error", "")
+
+    score_str     = f"{score:.3f}"     if score     is not None else "—"
+    threshold_str = f"{threshold:.2f}" if threshold is not None else "—"
+    status        = "PASS" if passed else ("FAIL" if passed is False else "SKIP")
+    crit_marker   = " [CRITICAL]" if critical else ""
+
+    return f"  {status}{crit_marker:11s} {metric:<28s} score={score_str:<7} threshold={threshold_str:<6} {notes}"
+
+
+def _build_score_table(threshold_result: dict) -> str:
+    """Full metric table — attached to every Allure test for the AI team."""
+    lines = ["", f"{'STATUS':<16} {'METRIC':<28} {'SCORE':<12} {'THRESHOLD':<10} NOTES", "-" * 90]
     for metric, data in threshold_result.items():
         if metric == "id":
             continue
-        if data.get("critical") and data.get("score") is not None:
-            if data.get("passed") is False:
-                failures.append(
-                    f"{metric}: score={data['score']:.3f} threshold={data['threshold']:.2f}"
-                )
-    return failures
+        lines.append(_score_line(metric, data))
+    return "\n".join(lines)
 
 
-# ── Parametrized end-to-end tests ─────────────────────────────────────────────
+def _collect_failures(threshold_result: dict) -> list[str]:
+    """
+    Return formatted failure lines for all critical metrics that did not pass.
+    score=None (Gate 2 skipped) is not a failure — it is expected behaviour.
+    """
+    return [
+        _score_line(metric, data)
+        for metric, data in threshold_result.items()
+        if metric != "id"
+        and data.get("critical")
+        and data.get("score") is not None
+        and data.get("passed") is False
+    ]
+
+
+# ── Primary parametrized test — one test per TC, all metrics ─────────────────
 
 @pytest.mark.integration
-@pytest.mark.parametrize("case_id,intent", ALL_CASES, ids=[c[0] for c in ALL_CASES])
-def test_critical_metrics_pass(case_id: str, intent: str, config: dict):
+@pytest.mark.parametrize("case_id", _ALL_CASE_IDS)
+def test_all_metrics(case_id: str, pipeline_results: dict) -> None:
     """
-    Full pipeline test — all critical metrics must pass their thresholds.
+    Full pipeline assertion for one test case — all metrics checked in one test.
 
-    Covers: faithfulness, answer_relevance, hallucination, answer_correctness,
-            ticket_status_accuracy, escalation_logic, out_of_scope_handling.
+    Uses pytest-check (soft assertions) so every failing metric is reported
+    together rather than stopping at the first failure. The Allure report
+    attaches the complete score table regardless of pass/fail outcome.
 
-    TC013 is expected to have LLM scores=None (Gate 2 fires — empty context).
+    TC013 LLM scores are expected to be None (Gate 2 fires — empty context).
     That is correct behaviour and does not fail this test.
     """
-    test_case        = get_case_by_id(case_id)
-    result           = run_case(test_case, config, verbose=False)
-    threshold_result = result["threshold_result"]
+    result           = pipeline_results.get(case_id, {})
+    threshold_result = result.get("threshold_result", {})
+    pipeline_output  = result.get("pipeline_output")
 
-    reply = result["pipeline_output"].get("generated_reply", "")
-    assert isinstance(reply, str) and len(reply) > 0, (
-        f"{case_id}: generated_reply is empty — SUT produced no output"
-    )
+    # Rate limit or Gate 1 skip — recorded as error in fixture, not a test failure
+    if result.get("error"):
+        pytest.skip(f"{case_id}: pipeline did not run — {result['error'][:120]}")
 
-    failures = _critical_failures(threshold_result)
-    assert not failures, (
-        f"{case_id} [{intent}] — {len(failures)} critical metric(s) failed:\n"
-        + "\n".join(f"  ✗ {f}" for f in failures)
-    )
+    # ── Allure metadata ───────────────────────────────────────────────────────
+    allure.dynamic.title(f"{case_id} — all metrics")
+    allure.dynamic.label("case_id", case_id)
 
-
-@pytest.mark.integration
-@pytest.mark.parametrize("case_id,intent", ALL_CASES, ids=[c[0] for c in ALL_CASES])
-def test_ticket_status_correct(case_id: str, intent: str, config: dict):
-    """
-    Ticket status predicted by SUT must match expected status in ground truth.
-
-    This is a deterministic custom metric — always runs, score is never None.
-    Ticket routing is a hard business requirement in BSFI CRM.
-    """
-    test_case        = get_case_by_id(case_id)
-    result           = run_case(test_case, config, verbose=False)
-    pipeline_output  = result["pipeline_output"]
-    threshold_result = result["threshold_result"]
-
-    status_data = threshold_result.get("ticket_status_accuracy", {})
-    score       = status_data.get("score")
-
-    assert score is not None, (
-        f"{case_id}: ticket_status_accuracy score is None — custom evaluator did not run"
-    )
-    assert score == 1.0, (
-        f"{case_id} [{intent}]: ticket status mismatch — "
-        f"predicted='{pipeline_output.get('predicted_ticket_status')}' "
-        f"expected='{pipeline_output['ground_truth'].get('expected_ticket_status')}'"
-    )
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize("case_id,intent", ALL_CASES, ids=[c[0] for c in ALL_CASES])
-def test_escalation_correct(case_id: str, intent: str, config: dict):
-    """
-    Escalation flag predicted by SUT must match expected escalation in ground truth.
-
-    A false negative (missed escalation) leaves a distressed customer unattended.
-    This test isolates escalation logic from the combined metric bundle.
-    """
-    test_case        = get_case_by_id(case_id)
-    result           = run_case(test_case, config, verbose=False)
-    pipeline_output  = result["pipeline_output"]
-    threshold_result = result["threshold_result"]
-
-    esc_data = threshold_result.get("escalation_logic", {})
-    score    = esc_data.get("score")
-
-    assert score is not None, (
-        f"{case_id}: escalation_logic score is None — custom evaluator did not run"
-    )
-    assert score == 1.0, (
-        f"{case_id} [{intent}]: escalation mismatch — "
-        f"predicted={pipeline_output.get('predicted_escalation')} "
-        f"expected={pipeline_output['ground_truth'].get('expected_escalation')}"
-    )
-
-
-# ── Targeted tests for boundary and adversarial cases ─────────────────────────
-
-@pytest.mark.integration
-def test_tc013_gate2_empty_context_skips_llm_eval(config):
-    """
-    TC013 — Gate 2: empty retrieved context must skip LLM evaluation.
-
-    When RAG retrieves nothing, all LLM metric scores must be None.
-    Custom evaluator (ticket_status, escalation) must still produce scores.
-    This validates that the pipeline degrades gracefully instead of crashing.
-    """
-    test_case       = get_case_by_id("TC013")
-    result          = run_case(test_case, config, verbose=False)
-    pipeline_output = result["pipeline_output"]
-    all_scores      = result["all_scores"]
-
-    assert len(pipeline_output.get("retrieved_context", [])) == 0, (
-        "TC013: retrieved_context should be empty to trigger Gate 2"
-    )
-
-    for metric in LLM_METRICS:
-        score = all_scores.get(metric, {}).get("score")
-        assert score is None, (
-            f"TC013: {metric} should be None when Gate 2 fires, got {score}"
+    if pipeline_output:
+        allure.dynamic.description(
+            f"Intent   : {pipeline_output.get('intent', '—')}\n"
+            f"Category : {pipeline_output.get('category', '—')}\n"
+            f"Model    : {pipeline_output.get('model_used', '—')}\n"
+            f"Subject  : {pipeline_output.get('email_subject', '—')}"
+        )
+        allure.attach(
+            pipeline_output.get("generated_reply", ""),
+            name="Generated Reply",
+            attachment_type=allure.attachment_type.TEXT,
         )
 
-    assert all_scores.get("ticket_status_accuracy", {}).get("score") is not None, (
-        "TC013: ticket_status_accuracy must run even when Gate 2 fires"
+    if threshold_result:
+        allure.attach(
+            _build_score_table(threshold_result),
+            name="Metric Scores",
+            attachment_type=allure.attachment_type.TEXT,
+        )
+
+    # ── Reply must be non-empty ───────────────────────────────────────────────
+    reply = pipeline_output.get("generated_reply", "") if pipeline_output else ""
+    check.is_true(
+        isinstance(reply, str) and len(reply) > 0,
+        msg=f"{case_id}: generated_reply is empty — SUT produced no output",
     )
-    assert all_scores.get("escalation_logic", {}).get("score") is not None, (
-        "TC013: escalation_logic must run even when Gate 2 fires"
+
+    # ── Assert every critical metric ─────────────────────────────────────────
+    failures = _collect_failures(threshold_result)
+    check.is_false(
+        bool(failures),
+        msg=(
+            f"\n{case_id} — {len(failures)} critical metric(s) failed:\n"
+            + "\n".join(failures)
+        ),
     )
+
+    # ── Deterministic metrics must always produce a score (never None) ────────
+    for metric in ("ticket_status_accuracy", "escalation_logic"):
+        score = threshold_result.get(metric, {}).get("score")
+        check.is_not_none(
+            score,
+            msg=f"{case_id}: {metric} score is None — custom evaluator did not run",
+        )
+
+
+# ── Targeted edge-case tests ──────────────────────────────────────────────────
+
+@pytest.mark.integration
+def test_tc013_gate2_empty_context_skips_llm_eval(tc013_simulated: dict) -> None:
+    """
+    TC013 — Gate 2: empty retrieved context must skip all LLM evaluations.
+
+    When RAG retrieves nothing, every LLM metric score must be None.
+    Custom evaluator (ticket_status, escalation) must still produce scores.
+    Validates graceful pipeline degradation — no crash, no fabricated scores.
+
+    Uses the tc013_simulated fixture which forces RAG mode to 'simulated' so
+    the empty retrieved_chunks from context.json are used instead of ChromaDB.
+    """
+    pipeline_output = tc013_simulated["pipeline_output"]
+    all_scores      = tc013_simulated["all_scores"]
+
+    with allure.step("retrieved_context must be empty to trigger Gate 2"):
+        assert len(pipeline_output.get("retrieved_context", [])) == 0, (
+            "TC013: retrieved_context should be empty to trigger Gate 2"
+        )
+
+    with allure.step("all LLM metric scores must be None when Gate 2 fires"):
+        for metric in LLM_METRICS:
+            score = all_scores.get(metric, {}).get("score")
+            assert score is None, (
+                f"TC013: {metric} should be None when Gate 2 fires, got {score}"
+            )
+
+    with allure.step("custom evaluator metrics must still run"):
+        assert all_scores.get("ticket_status_accuracy", {}).get("score") is not None, (
+            "TC013: ticket_status_accuracy must run even when Gate 2 fires"
+        )
+        assert all_scores.get("escalation_logic", {}).get("score") is not None, (
+            "TC013: escalation_logic must run even when Gate 2 fires"
+        )
 
 
 @pytest.mark.integration
-def test_tc014_language_check_produces_score(config):
+def test_tc014_language_check_produces_score(pipeline_results: dict) -> None:
     """
-    TC014 — Non-English email: language_check must always produce a score.
+    TC014 — Non-English email: language_check must always produce a binary score.
 
-    Whether the SUT replies in English (score=1.0) or another language (score=0.0),
-    the metric must not be None. A None here means the custom evaluator broke.
+    Score 1.0 = English reply (correct).  Score 0.0 = non-English reply (routing failure).
+    A None score means the custom evaluator itself broke — that is the failure being caught.
     """
-    test_case  = get_case_by_id("TC014")
-    result     = run_case(test_case, config, verbose=False)
+    result = pipeline_results["TC014"]
+    if result.get("error"):
+        pytest.skip(f"TC014: pipeline did not run — {result['error'][:120]}")
     all_scores = result["all_scores"]
-
     lang_score = all_scores.get("language_check", {}).get("score")
-    assert lang_score is not None, "TC014: language_check must always produce a score"
-    assert lang_score in (0.0, 1.0), (
-        f"TC014: language_check score must be 0.0 or 1.0, got {lang_score}"
+
+    check.is_not_none(lang_score, msg="TC014: language_check must always produce a score")
+    check.is_in(
+        lang_score,
+        (0.0, 1.0),
+        msg=f"TC014: language_check score must be 0.0 or 1.0, got {lang_score}",
     )
 
 
 @pytest.mark.integration
-def test_tc015_pii_leakage_passes(config):
+def test_tc015_pii_leakage_passes(pipeline_results: dict) -> None:
     """
     TC015 — PII leakage prevention: reply must not echo Aadhaar, PAN, or account numbers.
 
-    pii_leakage is LLM-judged. Score=1.0 means no PII leaked. This is a
-    regulatory requirement for BSFI — failing this in production is a compliance breach.
+    pii_leakage is LLM-judged. Score=1.0 means no PII leaked.
+    Regulatory requirement — failing this in production is a compliance breach.
     """
-    test_case        = get_case_by_id("TC015")
-    result           = run_case(test_case, config, verbose=False)
+    result = pipeline_results["TC015"]
+    if result.get("error"):
+        pytest.skip(f"TC015: pipeline did not run — {result['error'][:120]}")
     threshold_result = result["threshold_result"]
-
-    pii_data = threshold_result.get("pii_leakage", {})
-    score    = pii_data.get("score")
+    pii_data         = threshold_result.get("pii_leakage", {})
+    score            = pii_data.get("score")
 
     if score is None:
-        pytest.skip("TC015: pii_leakage score is None — LLM eval was skipped (Gate 2)")
+        pytest.skip("TC015: pii_leakage score is None — LLM eval skipped (Gate 2)")
 
     assert pii_data.get("passed"), (
-        f"TC015: PII leakage detected — score={score:.3f}, "
-        f"reply may be echoing customer PII back"
+        f"TC015: PII leakage detected — score={score:.3f}. "
+        f"Reply may be echoing customer Aadhaar, PAN, or account number."
     )
 
 
 @pytest.mark.integration
-def test_tc010_out_of_scope_handled_correctly(config):
+def test_tc010_out_of_scope_handled_correctly(pipeline_results: dict) -> None:
     """
     TC010 — Dual intent: out-of-scope stock query + in-scope loan offer.
 
-    out_of_scope_handling must pass (SUT correctly declines investment advice).
-    hallucination must pass (SUT must not fabricate investment advice).
-    The SUT must NOT refuse the loan offer part — that is in scope.
+    SUT must correctly decline investment advice (out_of_scope_handling=1.0)
+    and must not fabricate advice (hallucination passes threshold).
+    The in-scope loan offer part must NOT be refused.
     """
-    test_case        = get_case_by_id("TC010")
-    result           = run_case(test_case, config, verbose=False)
+    result = pipeline_results["TC010"]
+    if result.get("error"):
+        pytest.skip(f"TC010: pipeline did not run — {result['error'][:120]}")
     all_scores       = result["all_scores"]
     threshold_result = result["threshold_result"]
 
     oos_score = all_scores.get("out_of_scope_handling", {}).get("score")
-    assert oos_score is not None, "TC010: out_of_scope_handling must produce a score"
-    assert oos_score == 1.0, (
-        f"TC010: out_of_scope_handling failed — score={oos_score}, "
-        f"notes={all_scores.get('out_of_scope_handling', {}).get('notes', '')}"
+    check.is_not_none(oos_score, msg="TC010: out_of_scope_handling must produce a score")
+    check.equal(
+        oos_score,
+        1.0,
+        msg=(
+            f"TC010: out_of_scope_handling failed — score={oos_score}, "
+            f"notes={all_scores.get('out_of_scope_handling', {}).get('notes', '')}"
+        ),
     )
 
     hall_data  = threshold_result.get("hallucination", {})
     hall_score = hall_data.get("score")
     if hall_score is not None:
-        assert hall_data.get("passed"), (
-            f"TC010: hallucination too high — score={hall_score:.3f} "
-            f"threshold={hall_data.get('threshold')}"
+        check.is_true(
+            hall_data.get("passed"),
+            msg=(
+                f"TC010: hallucination too high — score={hall_score:.3f} "
+                f"threshold={hall_data.get('threshold')}"
+            ),
         )
 
 
 @pytest.mark.integration
-def test_tc012_no_restricted_words_in_reply(config):
+def test_tc012_no_restricted_words_in_reply(pipeline_results: dict) -> None:
     """
     TC012 — Guaranteed returns query: reply must not contain restricted phrases.
 
-    restricted_words checks for regulatory violations — 'guaranteed', 'assured returns',
-    '100% safe' etc. A BSFI CRM agent must never use these phrases.
-    This is a deterministic custom metric, always runs, never None.
+    Checks for regulatory violations — 'guaranteed', 'assured returns', '100% safe', etc.
+    A BSFI CRM agent must never use these phrases (RBI/SEBI mis-selling risk).
+    Deterministic metric — always runs, score is never None.
     """
-    test_case  = get_case_by_id("TC012")
-    result     = run_case(test_case, config, verbose=False)
+    result = pipeline_results["TC012"]
+    if result.get("error"):
+        pytest.skip(f"TC012: pipeline did not run — {result['error'][:120]}")
     all_scores = result["all_scores"]
+    rw_data    = all_scores.get("restricted_words", {})
+    score      = rw_data.get("score")
 
-    rw_data = all_scores.get("restricted_words", {})
-    score   = rw_data.get("score")
-
-    assert score is not None, "TC012: restricted_words must always produce a score"
-    assert score == 1.0, (
-        f"TC012: restricted words found in reply — {rw_data.get('notes', '')}"
+    check.is_not_none(score, msg="TC012: restricted_words must always produce a score")
+    check.equal(
+        score,
+        1.0,
+        msg=f"TC012: restricted words found in reply — {rw_data.get('notes', '')}",
     )

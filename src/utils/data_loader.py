@@ -16,6 +16,7 @@ Standalone test:
     python -m src.utils.data_loader
 """
 
+import copy
 import json
 from functools import cache
 from pathlib import Path
@@ -40,7 +41,7 @@ def validate_case_fields(case: dict) -> None:
     Raise ValueError with a clear message if any required field is missing or empty.
     Called after joining all 3 data files — before the case is returned to callers.
     """
-    missing = [f for f in REQUIRED_CASE_FIELDS if case.get(f) is None or f not in case]
+    missing = [f for f in REQUIRED_CASE_FIELDS if f not in case or case[f] is None or case[f] == ""]
     if missing:
         raise ValueError(
             f"{case.get('id', '?')}: missing required field(s): {', '.join(missing)} "
@@ -49,12 +50,16 @@ def validate_case_fields(case: dict) -> None:
 
 
 @cache
-def _load_json(filename: str) -> dict:
+def _load_json_cached(filename: str) -> dict:
     path = DATA_DIR / filename
     if not path.exists():
         raise FileNotFoundError(f"Data file not found: {path}")
     with open(path) as f:
         return json.load(f)
+
+
+def _load_json(filename: str) -> dict:
+    return copy.deepcopy(_load_json_cached(filename))
 
 
 def load_test_cases(case_ids: Optional[list] = None) -> list:
@@ -73,7 +78,6 @@ def load_test_cases(case_ids: Optional[list] = None) -> list:
             expected_reply, expected_ticket_status, expected_escalation
             expected_tone, key_facts_to_include
             validation_focus, llm_syndrome_watch
-            evaluation_overrides
     """
     emails_data       = _load_json("emails.json")
     context_data      = _load_json("context.json")
@@ -127,9 +131,6 @@ def load_test_cases(case_ids: Optional[list] = None) -> list:
             # Validation metadata
             "validation_focus"    : gt.get("validation_focus", []),
             "llm_syndrome_watch"  : gt.get("llm_syndrome_watch", ""),
-
-            # Per-case threshold overrides (empty dict = use global config.yaml values)
-            "evaluation_overrides": gt.get("evaluation_overrides", {})
         }
 
         try:
@@ -181,17 +182,14 @@ if __name__ == "__main__":
     table.add_column("Intent",    width=28)
     table.add_column("Status",    width=12)
     table.add_column("Escalate",  width=9)
-    table.add_column("Overrides", width=10)
 
     for c in cases:
-        has_overrides = "YES" if c["evaluation_overrides"] else "no"
         table.add_row(
             c["id"],
             c["category"],
             c["intent"],
             c["expected_ticket_status"],
-            str(c["expected_escalation"]),
-            has_overrides
+            str(c["expected_escalation"])
         )
 
     console.print(table)
@@ -204,6 +202,5 @@ if __name__ == "__main__":
     rprint(f"  Expected status: {tc003['expected_ticket_status']}")
     rprint(f"  Escalate       : {tc003['expected_escalation']}")
     rprint(f"  Syndrome watch : {tc003['llm_syndrome_watch']}")
-    rprint(f"  Overrides      : {tc003['evaluation_overrides']}")
 
     console.print("\n[bold green]✓ Data loader working — all 3 files joined correctly[/bold green]\n")

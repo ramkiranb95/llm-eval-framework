@@ -30,9 +30,14 @@ from rich import print as rprint
 from src.utils.config_loader import load_config, get_pipeline_config
 from src.utils.data_loader import load_test_cases, get_case_by_id
 from src.pipeline.crm_responder import generate_response
-from src.evaluators.custom_evaluator import evaluate as custom_evaluate
+from src.evaluators.custom_evaluator import evaluate as custom_evaluate, language_check
 from src.scoring.threshold_checker import check_thresholds
 from src.scoring.release_gate import evaluate_gate
+
+# DeepEval key → canonical metric name used throughout the framework
+_DE_ALIAS = {
+    "answer_relevancy": "answer_relevance",
+}
 
 
 console = Console()
@@ -67,13 +72,24 @@ def run_case(test_case: dict, config: dict, verbose: bool = True) -> dict:
         console.print(f"[bold]Email:[/bold]    {test_case['email_subject']}")
         console.print(f"[dim]Syndrome watch: {test_case.get('llm_syndrome_watch', '—')}[/dim]\n")
 
-    # ── Gate 1: Minimum email body length ────────────────────────────────────
-    email_body    = test_case.get("email_body", "")
-    min_length    = pipeline_cfg["min_email_body_length"]
+    # ── Gate 1: Pre-LLM checks ───────────────────────────────────────────────
+    email_body = test_case.get("email_body", "")
+
+    # 1a. Minimum length
+    min_length = pipeline_cfg["min_email_body_length"]
     if len(email_body) < min_length:
         raise ValueError(
             f"email body too short ({len(email_body)} chars, minimum {min_length}) "
             f"— skipped before LLM call"
+        )
+
+    # 1b. Input language check — non-English email skips LLM, routes to human
+    lang_threshold = pipeline_cfg["language_check_ascii_threshold"]
+    lang_result    = language_check(email_body, lang_threshold)
+    if lang_result["score"] == 0.0:
+        raise ValueError(
+            f"non-English input detected — skipped before LLM call "
+            f"({lang_result['notes']})"
         )
 
     # ── Step 1: Generate CRM reply (with per-case timeout) ────────────────────
@@ -84,7 +100,7 @@ def run_case(test_case: dict, config: dict, verbose: bool = True) -> dict:
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(generate_response, test_case, config)
+            future = executor.submit(generate_response, test_case, config, verbose)
             pipeline_output = future.result(timeout=case_timeout)
     except concurrent.futures.TimeoutError:
         raise ValueError(
@@ -111,7 +127,7 @@ def run_case(test_case: dict, config: dict, verbose: bool = True) -> dict:
         console.print(f"\n[dim]Running evaluators — mode: {mode_label}...[/dim]")
 
     # Custom evaluator always runs — deterministic, no LLM
-    custom_scores = custom_evaluate(pipeline_output)
+    custom_scores = custom_evaluate(pipeline_output, config=config)
 
     # ── Gate 2: Confidence gate — skip LLM eval if SUT output is invalid ─────
     meta_parse_error = pipeline_output.get("meta_parse_error")
@@ -126,14 +142,32 @@ def run_case(test_case: dict, config: dict, verbose: bool = True) -> dict:
         from src.evaluators.combined_evaluator import evaluate as combined_evaluate
         llm_scores = combined_evaluate(pipeline_output, config)
     else:
-        raise NotImplementedError(
-            f"evaluation.mode '{eval_mode}' is not supported in Tier 1.\n"
-            "  Only mode: 'combined' is integrated into the Tier 1 pipeline.\n"
-            "  Separate RAGAs and DeepEval evaluators are Tier 2 work-in-progress:\n"
-            "    src/evaluators/experimental/ragas_evaluator.py\n"
-            "    src/evaluators/experimental/deepeval_evaluator.py\n"
-            "  Set evaluation.mode: 'combined' in config/config.yaml to proceed."
-        )
+        # Separate mode — call RAGAs and DeepEval libraries independently,
+        # then merge into the same flat dict structure as combined mode.
+        from src.evaluators.experimental.ragas_evaluator import evaluate as ragas_evaluate
+        from src.evaluators.experimental.deepeval_evaluator import evaluate as deepeval_evaluate
+        from src.evaluators.combined_evaluator import LLM_METRICS
+
+        ragas_scores   = ragas_evaluate(pipeline_output, config)
+        deepeval_raw   = deepeval_evaluate(pipeline_output, config)
+
+        # Flatten DeepEval results with alias normalisation
+        deepeval_scores: dict = {}
+        for k, v in deepeval_raw.items():
+            canonical = _DE_ALIAS.get(k, k)
+            deepeval_scores[canonical] = v
+
+        # Merge: RAGAs takes precedence for overlapping metrics (faithfulness, answer_relevance)
+        # because RAGAs uses multi-step claim decomposition — more rigorous than single-pass.
+        _not_implemented = {"score": None, "error": "not available in separate mode — use combined"}
+        llm_scores = {}
+        for metric in LLM_METRICS:
+            if metric in ragas_scores:
+                llm_scores[metric] = ragas_scores[metric]
+            elif metric in deepeval_scores:
+                llm_scores[metric] = deepeval_scores[metric]
+            else:
+                llm_scores[metric] = _not_implemented
 
     # Merge all scores into one flat dict
     all_scores = {}
@@ -145,13 +179,12 @@ def run_case(test_case: dict, config: dict, verbose: bool = True) -> dict:
         _print_routing_decision(pipeline_output, custom_scores, llm_scores, config)
 
     # ── Step 3: Threshold check ──────────────────────────────────────────────
-    overrides        = pipeline_output.get("evaluation_overrides", {})
-    threshold_result = check_thresholds(all_scores, config, overrides)
+    threshold_result = check_thresholds(all_scores, config)
     threshold_result["id"] = case_id
 
     # ── Step 4: Print scores table ───────────────────────────────────────────
     if verbose:
-        _print_scores_table(threshold_result, overrides)
+        _print_scores_table(threshold_result)
 
     return {
         "pipeline_output"  : pipeline_output,
@@ -245,7 +278,7 @@ def _print_routing_decision(
         console.print(f"   Ticket status : [green]{ticket_status}[/green]")
 
 
-def _print_scores_table(threshold_result: dict, overrides: dict) -> None:
+def _print_scores_table(threshold_result: dict) -> None:
     """Print per-metric scores with pass/fail colours."""
     table = Table(show_header=True, header_style="bold magenta", show_lines=False)
     table.add_column("Metric",    min_width=24)
@@ -275,23 +308,16 @@ def _print_scores_table(threshold_result: dict, overrides: dict) -> None:
         else:
             colour = "yellow"
 
-        override_key  = f"{metric}_threshold"
-        threshold_str = f"{threshold:.2f}" if threshold is not None else "—"
-        if override_key in overrides:
-            threshold_str += " [dim]†[/dim]"
-
         table.add_row(
             metric,
             f"[{colour}]{score:.3f}[/{colour}]" if score is not None else f"[{colour}]—[/{colour}]",
-            threshold_str,
+            f"{threshold:.2f}" if threshold is not None else "—",
             f"[{colour}]{'✓' if passed else '✗' if passed is False else '?'}[/{colour}]",
             "[red]YES[/red]" if critical else "no",
             (f"↓ inverted  " if inverted else "") + (str(error)[:36] if error else "")
         )
 
     console.print(table)
-    if any(f"{m}_threshold" in overrides for m in threshold_result if m != "id"):
-        console.print("[dim]† per-case override (ground_truth.json evaluation_overrides)[/dim]")
 
 
 # ── List available cases ──────────────────────────────────────────────────────
@@ -304,12 +330,10 @@ def list_cases() -> None:
     table.add_column("Intent",   width=30)
     table.add_column("Priority", width=10)
     table.add_column("Escalate", width=9)
-    table.add_column("Overrides",width=10)
     for c in cases:
-        has_overrides = "YES" if c.get("evaluation_overrides") else "no"
         table.add_row(
             c["id"], c["category"], c["intent"], c["priority"],
-            str(c["expected_escalation"]), has_overrides
+            str(c["expected_escalation"])
         )
     console.print(table)
 

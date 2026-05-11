@@ -17,23 +17,23 @@ llm:
   # sut_provider: "gemini"
   # sut_model: "gemini-2.0-flash-lite"      # gemini provider
   # sut_provider: "groq"
-  # sut_model: "llama-3.3-70b-versatile"    # groq provider — 100K TPD, hits limit on --all runs
+  # sut_model: "llama-3.3-70b-versatile"   # groq provider — 6K TPM, too low for 16 cases
   sut_provider: "cerebras"
-  sut_model: "llama3.1-8b"                  # cerebras provider — 1M TPD, 100K TPM, fast inference
+  sut_model: "llama3.1-8b"                 # cerebras provider — 30 RPM, 14.4K RPD, 60K TPM
   # sut_provider: "ollama"
-  # sut_model: "llama3.2:3b"               # ollama provider (local)
+  # sut_model: "llama3.2:3b"               # ollama provider (local) — no quota, 2GB RAM
   ollama_base_url: "http://localhost:11434"
   temperature: 0.0
 
   # ── Judge LLM (evaluates SUT output via RAGAs + DeepEval) ──
   # Switch provider here — key is read from .env automatically.
   # Options: "gemini" | "groq" | "ollama"
-  # judge_provider: "gemini"
-  # judge_model: "gemini-2.5-flash-lite"    # gemini provider — 15 RPM hits limit on --all runs
-  judge_provider: "groq"
-  judge_model: "llama-3.3-70b-versatile"   # groq provider — 30 RPM, ~64K tokens for 16 cases (within 100K TPD)
+  judge_provider: "gemini"
+  judge_model: "gemini-2.0-flash-lite"     # gemini free tier — sufficient for TC001 single case (~25 calls)
+  # judge_provider: "groq"
+  # judge_model: "llama-3.3-70b-versatile" # groq provider — 30 RPM, 100K TPD — insufficient for separate mode
   # judge_provider: "ollama"
-  # judge_model: "mistral"                  # ollama provider (slow, local, no quota)
+  # judge_model: "llama3.2:3b"             # ollama provider — too slow, fails structured output on 3B model
 
   disagreement_threshold: 0.15
 
@@ -42,13 +42,36 @@ llm:
   judge_temperature: 0.0     # 0.0 = deterministic scoring, no creative variation
 
   # ── Batch run pacing ─────────────────────────────────────────────────────────
-  inter_case_delay_seconds: 5   # pause between cases on --all runs (reduces RPM pressure — Gemini free tier: 15 RPM)
-
 # -- PIPELINE VALIDATION ------------------------------------
 pipeline:
   min_email_body_length: 50   # emails shorter than this are skipped before any LLM call
+  inter_case_delay_seconds: 2    # pause between cases — Ollama is local, no quota; Judge is Gemini flash-lite (1M TPM)
   case_timeout_seconds: 120   # per-case wall-clock timeout for generate_response()
   confidence_threshold: 0.50  # if any critical LLM metric score is below this, assign to human agent
+
+  # Gate 1 pre-LLM check — applied to the INPUT email before any LLM call
+  # Ratio of ASCII alpha chars to total alpha chars; below threshold = non-English → skip LLM, route to human
+  language_check_ascii_threshold: 0.85
+
+  # Restricted phrases — checked against the GENERATED REPLY (post-LLM, custom evaluator)
+  # RBI/SEBI regulatory risk phrases a CRM bot must never use
+  # Add or remove entries here without touching any code
+  restricted_phrases:
+    - "guarantee"
+    - "guaranteed"
+    - "assured returns"
+    - "assured"
+    - "definitely approved"
+    - "100% safe"
+    - "no risk"
+    - "risk free"
+    - "risk-free"
+    - "double your money"
+    - "invest in"
+    - "buy this"
+    - "sell this"
+    - "stock tip"
+    - "market tip"
 
 # -- RAG CONFIGURATION ---------------------------------------
 rag:
@@ -72,8 +95,8 @@ evaluation:
 
   # ── Evaluator mode ──────────────────────────────────────────
   # combined : 1 LLM call per case — all 15 metrics in one prompt (Tier 1 — active)
-  # separate : RAGAs + DeepEval independently — Tier 2, not yet implemented
-  mode: "combined"
+  # separate : RAGAs + DeepEval libraries independently — Tier 2 (active)
+  mode: "separate"
 
   # NOTE — combined mode thresholds (see learningLog L007):
   # Combined mode uses a single LLM call for all 7 metrics. Single-pass judgment
@@ -140,7 +163,8 @@ evaluation:
 
     key_facts_coverage:
       enabled: true
-      threshold: 0.50        # semantic embedding scoring — realistic for paraphrased LLM output
+      threshold: 0.50                      # semantic embedding scoring — realistic for paraphrased LLM output
+      semantic_similarity_threshold: 0.45  # cosine similarity cutoff — fact is "covered" if any reply sentence scores >= this
       critical: false
       description: "Reply covers the key facts defined in ground truth"
 
