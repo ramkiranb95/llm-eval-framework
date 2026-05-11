@@ -58,10 +58,7 @@ def _escalation_logic(predicted: bool, expected: bool) -> float:
     return 1.0 if bool(predicted) == bool(expected) else 0.0
 
 
-SEMANTIC_SIMILARITY_THRESHOLD = 0.45  # cosine sim — tune if too strict/lenient
-
-
-def _key_facts_coverage(reply: str, key_facts: list) -> float:
+def _key_facts_coverage(reply: str, key_facts: list, similarity_threshold: float = 0.45) -> float:
     """
     Fraction of expected key facts semantically covered in the generated reply.
 
@@ -96,7 +93,7 @@ def _key_facts_coverage(reply: str, key_facts: list) -> float:
 
         covered = sum(
             1 for fact_emb in fact_embs
-            if float(np.max(sentence_embs @ fact_emb)) >= SEMANTIC_SIMILARITY_THRESHOLD
+            if float(np.max(sentence_embs @ fact_emb)) >= similarity_threshold
         )
         return round(covered / len(key_facts), 4)
 
@@ -104,63 +101,59 @@ def _key_facts_coverage(reply: str, key_facts: list) -> float:
         return None
 
 
-_RESTRICTED_PHRASES = [
-    "guarantee", "guaranteed", "assured returns", "assured",
-    "definitely approved", "100% safe", "no risk", "risk free",
-    "risk-free", "double your money", "invest in", "buy this",
-    "sell this", "stock tip", "market tip",
-]
-
-
-def restricted_words(reply: str) -> dict:
+def restricted_words(reply: str, phrases: list) -> dict:
     """
     Check if the reply contains BSFI-restricted phrases that create regulatory risk.
 
-    These are phrases a CRM bot must never use — they imply guaranteed returns,
-    investment advice, or certainty of approval, which are mis-selling risks
-    under RBI/SEBI regulations.
+    Phrases are loaded from config.yaml pipeline.restricted_phrases — no hardcoding.
+    These imply guaranteed returns, investment advice, or certainty of approval,
+    which are mis-selling risks under RBI/SEBI regulations.
+
+    Args:
+        reply   : generated CRM reply
+        phrases : list of restricted phrases from config (pipeline.restricted_phrases)
 
     Returns:
         {"score": 1.0, "notes": "No restricted words found"}          — clean
         {"score": 0.0, "notes": "Restricted words found: [...]"}      — violation
     """
     reply_lower = reply.lower()
-    found = [phrase for phrase in _RESTRICTED_PHRASES if phrase in reply_lower]
+    found = [phrase for phrase in phrases if phrase in reply_lower]
 
     if found:
         return {"score": 0.0, "notes": f"Restricted words found: {found}"}
     return {"score": 1.0, "notes": "No restricted words found"}
 
 
-def language_check(reply: str) -> dict:
+def language_check(text: str, threshold: float = 0.85) -> dict:
     """
-    Heuristic check for whether the reply is in English.
+    Heuristic check for whether the text is in English.
 
     Uses the ratio of ASCII alphabetic characters to total alphabetic characters.
-    Divides by total alpha characters (not total chars) to avoid false negatives
-    from punctuation, digits, spaces, and currency symbols (Rs., %, etc.) which
-    are common in BSFI replies but are not language indicators.
+    Threshold is configurable via config.yaml pipeline.language_check_ascii_threshold.
 
-    A reply with a high proportion of non-ASCII alpha characters is likely
-    non-English (Hindi, Tamil, Bengali, etc.) and should be routed to a
-    multilingual agent.
+    Used in two places:
+      - Gate 1 (playground.py): checks the INPUT email — non-English skips LLM entirely
+      - Custom evaluator: checks the OUTPUT reply — catches non-English bot responses
 
-    Threshold: ratio >= 0.85 → English, < 0.85 → non-English.
+    Args:
+        text      : email body (Gate 1) or generated reply (evaluator)
+        threshold : ASCII alpha ratio below which text is flagged as non-English
 
     Returns:
         {"score": 1.0, "notes": "English detected"}
-        {"score": 0.0, "notes": "Non-English reply detected — assign to human agent"}
+        {"score": 0.0, "notes": "Non-English detected — assign to human agent"}
     """
-    if not reply:
-        return {"score": 1.0, "notes": "Empty reply — defaulting to English"}
+    if not text:
+        return {"score": 1.0, "notes": "Empty text — defaulting to English"}
 
-    ascii_alpha = sum(1 for c in reply if c.isascii() and c.isalpha())
-    total_alpha = sum(1 for c in reply if c.isalpha())
+    ascii_alpha = sum(1 for c in text if c.isascii() and c.isalpha())
+    total_alpha = sum(1 for c in text if c.isalpha())
     ratio = ascii_alpha / total_alpha if total_alpha > 0 else 1.0
 
-    if ratio >= 0.85:
+    if ratio >= threshold:
         return {"score": 1.0, "notes": "English detected"}
-    return {"score": 0.0, "notes": "Non-English reply detected — assign to human agent"}
+    return {"score": 0.0, "notes": "Non-English detected — assign to human agent"}
 
 
 def _out_of_scope_handling(reply: str, intent: str) -> Optional[float]:
@@ -194,7 +187,7 @@ def _out_of_scope_handling(reply: str, intent: str) -> Optional[float]:
 
 # ── Main evaluate function ────────────────────────────────────────────────────
 
-def evaluate(pipeline_output: dict, test_case: Optional[dict] = None) -> dict:
+def evaluate(pipeline_output: dict, test_case: Optional[dict] = None, config: Optional[dict] = None) -> dict:
     """
     Run all deterministic evaluations on one pipeline output.
 
@@ -204,12 +197,26 @@ def evaluate(pipeline_output: dict, test_case: Optional[dict] = None) -> dict:
                           predicted_escalation, ground_truth, intent
         test_case       : Unused — kept for API consistency with other evaluators.
                           ground_truth is already embedded in pipeline_output.
+        config          : full config dict — used to read restricted_phrases and
+                          language_check_ascii_threshold. Falls back to defaults if None.
 
     Returns:
         dict with one entry per metric:
             {metric_name: {"score": float, "notes": str}}
         out_of_scope_handling is omitted for in-scope cases.
     """
+    from src.utils.config_loader import get_pipeline_config, get_metrics_config
+    pipeline_cfg = get_pipeline_config(config)
+    restricted_phrases = pipeline_cfg["restricted_phrases"]
+    lang_threshold     = pipeline_cfg["language_check_ascii_threshold"]
+
+    metrics_cfg          = get_metrics_config(config)
+    similarity_threshold = (
+        metrics_cfg.get("custom", {})
+                   .get("key_facts_coverage", {})
+                   .get("semantic_similarity_threshold", 0.45)
+    )
+
     gt      = pipeline_output["ground_truth"]
     reply   = pipeline_output["generated_reply"]
     intent  = pipeline_output.get("intent", "")
@@ -238,7 +245,7 @@ def evaluate(pipeline_output: dict, test_case: Optional[dict] = None) -> dict:
 
     # 3. Key facts coverage
     key_facts = gt.get("key_facts_to_include", [])
-    kf_score  = _key_facts_coverage(reply, key_facts)
+    kf_score  = _key_facts_coverage(reply, key_facts, similarity_threshold)
     if kf_score is None:
         results["key_facts_coverage"] = {
             "score" : None,
@@ -258,11 +265,11 @@ def evaluate(pipeline_output: dict, test_case: Optional[dict] = None) -> dict:
             "notes" : "fabricated advice" if oos_score == 0.0 else ("redirected correctly" if oos_score == 1.0 else "ambiguous")
         }
 
-    # 5. Restricted words (always run)
-    results["restricted_words"] = restricted_words(reply)
+    # 5. Restricted words — checked against the OUTPUT reply (post-LLM)
+    results["restricted_words"] = restricted_words(reply, restricted_phrases)
 
-    # 6. Language check (always run)
-    results["language_check"] = language_check(reply)
+    # 6. Language check — checked against the OUTPUT reply (post-LLM)
+    results["language_check"] = language_check(reply, lang_threshold)
 
     return results
 

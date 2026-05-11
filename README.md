@@ -19,7 +19,7 @@ evidence-based quality evaluation of LLM outputs.
 |---|---|---|
 | Python | 3.10+ | DeepEval and RAGAs require 3.10 or higher |
 | RAM | 8 GB | Mistral (4B) needs ~5 GB free to run in Ollama |
-| Disk | 6 GB free | ~4 GB for mistral model, ~2 GB for Python packages |
+| Disk | 6 GB free | ~4 GB for a typical SUT model, ~2 GB for Python packages |
 | OS | macOS / Linux / Windows (WSL2) | Ollama on Windows requires WSL2 |
 
 ### 1. Install system tools
@@ -33,8 +33,9 @@ python --version   # must be 3.10+
 curl -fsSL https://ollama.com/install.sh | sh
 # Windows: download installer from https://ollama.com/download
 
-# Pull the SUT model (~4 GB download — do this once)
-ollama pull mistral
+# Pull the SUT model — whichever model you set as sut_model in config.yaml
+# e.g. ollama pull mistral  or  ollama pull llama3.2:3b
+ollama pull <your-sut-model>
 
 # Start Ollama server (keep this running in a separate terminal)
 ollama serve
@@ -65,6 +66,8 @@ pip install -r requirements.txt
 | `chromadb` | Vector DB — live RAG mode (`rag.mode: "live"` in config.yaml) |
 | `rich` | Terminal output formatting |
 | `python-dotenv` | API key loading from `.env` |
+| `pytest-check` | Soft assertions — accumulate all metric failures per test case before reporting |
+| `allure-pytest` | Structured HTML test reports with per-case metric score attachments |
 
 ### 3. Configure your judge LLM API key
 
@@ -102,7 +105,7 @@ llm:
 ### 4. Run
 
 ```bash
-# List all 10 available test cases
+# List all available test cases
 python playground.py --list
 
 # Run a single case — fastest feedback loop
@@ -111,10 +114,10 @@ python playground.py TC001
 # Run specific cases
 python playground.py TC003 TC008
 
-# Run all 10 cases
+# Run all cases
 python playground.py --all
 
-# Run all 10 cases and save a JSON report to reports/
+# Run all cases and save a JSON report to reports/
 python playground.py --all --save-report
 ```
 
@@ -133,29 +136,142 @@ Runs automated evaluation of LLM responses across multiple quality dimensions:
 
 ---
 
-## How It Works
+## How It Works — E2E Pipeline
 
 ```
-Test Input (email / query)
-        ↓
-  Gate 1: email body length check (raises ValueError if too short)
-        ↓
-  RAG Pipeline (simulated or live ChromaDB — config: rag.mode)
-        ↓
-  SUT — Ollama/mistral (local, the model being tested)
-        ↓
-  Gate 2: skip LLM eval if meta_parse_error or empty context
-        ↓
-  Evaluation Layer
-    ├── Combined Evaluator → 7 LLM metrics in 1 Groq call
-    ├── Custom Evaluator   → ticket status, escalation, key facts (no LLM)
-    └── Semantic Similarity → BERTScore + ROUGE-1/L (no LLM)
-        ↓
-  Threshold Checker → pass / fail per metric
-        ↓
-  Release Gate → PASSED or FAILED
-        ↓
-  JSON Report → reports/
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ STEP 0 — DATA LOADING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  data_loader.py joins 3 files by test case ID:
+    emails.json        → customer email, subject, intent, priority
+    context.json       → pre-retrieved policy chunks (simulated RAG)
+    ground_truth.json  → expected reply, ticket status, key facts
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ STEP 1 — GATE 1: PRE-LLM CHECKS (input validation)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Runs BEFORE any LLM call — saves tokens if input is invalid.
+
+  1a. Length check
+      email body < min_email_body_length (config.yaml)
+      → raises ValueError, case skipped
+
+  1b. Language check (input)
+      ASCII alpha ratio < language_check_ascii_threshold (config.yaml)
+      → non-English detected → case skipped, route to human agent
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ STEP 2 — RAG RETRIEVAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Controlled by rag.mode in config.yaml:
+
+  simulated → context chunks read directly from context.json
+              (deterministic, stable for regression testing)
+
+  live      → email body embedded via all-MiniLM-L6-v2
+              → top-k chunks retrieved from ChromaDB (data/chroma_db/)
+              → build index once: python -m src.rag.retriever
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ STEP 3 — SUT: CRM RESPONDER (model under test)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  crm_responder.py sends ONE prompt to the SUT containing:
+    - SYSTEM prompt (CRM agent persona)
+    - Retrieved context chunks
+    - Customer email
+
+  SUT returns in a single response (parsed via regex):
+    [REPLY]     → generated CRM reply
+    [META]      → ticket_status + escalation_flag + reasoning (JSON)
+
+  meta_parse_error = True if [META] block is missing or malformed
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ STEP 4 — CUSTOM EVALUATOR (deterministic, no LLM)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Always runs — fast, no API cost.
+
+  ticket_status_accuracy  exact match: predicted vs expected status
+  escalation_logic        exact match: predicted vs expected escalation flag
+  key_facts_coverage      semantic similarity — fraction of ground truth
+                          key facts covered in the reply
+                          (threshold from config: semantic_similarity_threshold)
+  out_of_scope_handling   checks OOS cases redirect correctly (TC010 etc.)
+  restricted_words        detects RBI/SEBI-prohibited phrases in the reply
+                          (phrase list from config: pipeline.restricted_phrases)
+  language_check (output) ASCII ratio check on the generated reply
+                          (catches non-English bot responses)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ STEP 5 — GATE 2: CONFIDENCE GATE (SUT output validity)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Runs AFTER custom eval, BEFORE judge LLM — saves API quota.
+
+  Fires if:
+    meta_parse_error = True  (SUT failed to produce structured output)
+    retrieved_context = []   (empty context — nothing to evaluate against)
+
+  → All 15 LLM metrics marked as null (score: None, error: "skipped")
+  → Pipeline continues to threshold check and release gate
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ STEP 6 — COMBINED LLM EVALUATOR (judge LLM, 1 API call)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Single structured prompt sent to the judge LLM.
+  Judge runs at temperature=0 — deterministic, reproducible scores.
+  Returns all 15 scores + per-metric reasoning in one JSON response.
+
+  RAGAs group      faithfulness, answer_relevance,
+                   context_precision, context_recall
+  DeepEval group   hallucination (inverted), answer_correctness, coherence
+  BSFI-specific    tone_professionalism, toxicity (inverted),
+                   non_advice, topic_adherence, bias,
+                   pii_leakage, role_adherence, answer_similarity
+
+  Disagreement detection: if faithfulness is high but hallucination is also
+  high, the judge is contradicting itself — both scores are flagged with a
+  disagreement_warning (does not change the score, adds transparency).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ STEP 7 — THRESHOLD CHECKER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Compares every metric score against its configured threshold.
+  All thresholds from config.yaml — no per-case exceptions.
+
+  Normal metrics   pass if score >= threshold
+  Inverted metrics pass if score <= threshold  (hallucination, toxicity)
+
+  Output per metric: score | threshold | passed | critical | inverted
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ STEP 8 — ROUTING DECISION LOG
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  After all scores are available, logs the recommended action:
+    AUTO-RESPOND  all critical metrics pass
+    HUMAN REVIEW  any critical metric fails or score = None
+  Reasons listed per failing metric.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ STEP 9 — RELEASE GATE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Runs after ALL test cases complete (batch level).
+  Policy: all_critical_must_pass (config: release_gate.policy)
+
+  If ANY critical metric fails across ANY test case → GATE FAILS
+  Non-critical failures do not block the gate.
+
+  Output:
+    RELEASE GATE PASSED — all critical metrics within threshold
+    RELEASE GATE FAILED — one or more critical metrics below threshold
+                          + list of failing cases and metrics
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ STEP 10 — REPORT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Terminal: rich-formatted table per case + gate banner
+  JSON:     reports/run_<timestamp>.json (--save-report flag)
+            includes all scores, thresholds, pass/fail,
+            routing decisions, and gate result per case
 ```
 
 ---
@@ -165,18 +281,17 @@ Test Input (email / query)
 | Component | Tool |
 |---|---|
 | Language | Python 3.10+ |
-| SUT LLM | Ollama (mistral) — local, the model being evaluated |
-| Judge LLM | Groq llama-3.3-70b (default) — configurable: Groq / Gemini / Ollama |
-| Combined Evaluator | LangChain + custom prompt — all 7 LLM metrics in 1 API call |
-| RAG Evaluation | RAGAs 0.4.x — faithfulness, answer_relevance, context precision/recall |
-| LLM Evaluation | DeepEval — hallucination, bias, toxicity, GEval custom criteria |
-| Semantic Similarity | bert-score + rouge-score — no LLM required |
+| SUT LLM | Configurable via config.yaml (sut_provider + sut_model) — the model being evaluated |
+| Judge LLM | Configurable via config.yaml (judge_provider + judge_model) — evaluates SUT output |
+| Combined Evaluator | LangChain + custom prompt — all 15 LLM metrics in 1 API call — framework-sourced definitions |
+| RAG Evaluation | RAGAs 0.4.x — faithfulness, answer_relevance, context_precision, context_recall |
+| LLM Evaluation | DeepEval — hallucination, coherence, tone, toxicity, bias, and more |
 | Vector DB | ChromaDB (local) — live mode active |
 | Embeddings | all-MiniLM-L6-v2 (sentence-transformers) — chunk_size=256 words |
 | LLM Orchestration | LangChain |
 | Config | YAML |
 | Entry Point | playground.py |
-| Test Runner | pytest — 5 test files covering gates, evaluators, SUT integration |
+| Test Runner | pytest — covering gates, evaluators, SUT integration |
 
 ---
 
@@ -186,8 +301,9 @@ Test Input (email / query)
 # Python 3.10+
 python --version
 
-# Ollama — needed for the SUT (CRM responder)
-ollama pull mistral
+# SUT LLM — pull whichever model you configure as sut_model in config.yaml
+# e.g. ollama pull mistral  or  ollama pull llama3.2:3b
+ollama pull <your-sut-model>
 ollama serve
 
 # Judge LLM — add API key to .env (Gemini is default)
@@ -224,7 +340,7 @@ python playground.py TC001
 # Multiple cases
 python playground.py TC003 TC008
 
-# All 10 cases + save report
+# All cases + save report
 python playground.py --all --save-report
 
 # List all available cases
@@ -232,16 +348,17 @@ python playground.py --list
 ```
 
 ```bash
-# Run all tests (no Ollama or Groq needed for most)
-pytest tests/ -v
+# Run all 21 evaluation tests (requires SUT + Judge API keys)
+pytest tests/test_eval_cases.py -v
 
-# Run only gate and deterministic tests (zero external dependencies)
-pytest tests/test_pipeline_gates.py tests/test_custom_evaluator.py tests/test_semantic_similarity.py -v
+# Run with Allure report generation
+pytest tests/test_eval_cases.py --alluredir=reports/allure-results
+allure serve reports/allure-results
 
-# Run judge-dependent DeepEval tests (requires GROQ_API_KEY)
-pytest tests/test_deepeval_metrics.py -v -m requires_judge
+# Run only deterministic tests — zero external dependencies
+pytest tests/test_custom_evaluator.py tests/test_pipeline_gates.py tests/test_semantic_similarity.py -v
 
-# Run SUT integration tests (requires Ollama running)
+# Run SUT integration tests (requires SUT provider running)
 pytest tests/test_crm_responder.py -v -m integration
 ```
 
@@ -254,12 +371,14 @@ No code changes needed to tune the framework.
 
 ```yaml
 llm:
-  sut_model:      "mistral"                  # model being evaluated (always Ollama)
+  sut_provider:   "ollama"                   # "ollama" | "groq" | "gemini" | "cerebras"
+  sut_model:      "<your-sut-model>"           # model being evaluated
   judge_provider: "groq"                     # "groq" | "gemini" | "ollama"
-  judge_model:    "llama-3.3-70b-versatile"  # model for the chosen provider
+  judge_model:    "<your-judge-model>"         # model for the chosen provider
 
 evaluation:
-  mode: "combined"   # 1 LLM call per case — all 7 metrics (Tier 1 default)
+  mode: "combined"   # 1 LLM call — all 15 metrics (default, use for pytest + batch runs)
+  # mode: "separate" # RAGAs + DeepEval libraries (~12 calls) — deep analysis, single-case only
   ragas:
     faithfulness:
       enabled: true
@@ -289,7 +408,7 @@ evaluation:
 
 ## Roadmap
 
-- **Tier 1 (active):** Simulated + live ChromaDB RAG, combined evaluator (7 LLM metrics, 1 API call), BERTScore + ROUGE, pipeline guardrails (Gate 1 + Gate 2), disagreement detection, pytest suite
+- **Tier 1 (active):** Simulated + live ChromaDB RAG, combined evaluator (15 LLM metrics, 1 API call), pipeline guardrails (Gate 1 + Gate 2), disagreement detection, pytest suite
 - **Tier 2:** Warning tier in release gate, adversarial test cases, tone_empathy metric, ground truth realignment, push to GitHub
 - **Tier 3:** Pluggable domain (new domain via config), CI/CD via GitHub Actions, HTML dashboard, bias testing suite
 - **Tier 4:** Production monitoring — traffic sampling, drift detection, score trending, alerting

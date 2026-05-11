@@ -102,7 +102,7 @@ def _get_llm(sut_cfg: dict) -> ChatOpenAI:
     )
 
 
-def _parse_combined_output(raw_output: str) -> tuple[str, dict]:
+def _parse_combined_output(raw_output: str, verbose: bool = True) -> tuple[str, dict]:
     """
     Extract reply and ticket metadata from the combined LLM output.
 
@@ -120,7 +120,7 @@ def _parse_combined_output(raw_output: str) -> tuple[str, dict]:
     and the fallback default was used. Falls back gracefully if either section is missing.
     """
     # Extract reply — try proper closing tag first, then content between [REPLY] and [META]
-    # (mistral often omits [/REPLY] and [/META] closing tags)
+    # some SUT models omit closing tags — fallback handles that
     reply_match = re.search(r'\[REPLY\](.*?)\[/REPLY\]', raw_output, re.DOTALL)
     if not reply_match:
         reply_match = re.search(r'\[REPLY\](.*?)(?=\[META\]|\Z)', raw_output, re.DOTALL)
@@ -137,6 +137,7 @@ def _parse_combined_output(raw_output: str) -> tuple[str, dict]:
         meta_text = re.sub(r'\s*```$', '', meta_text).strip()
         try:
             ticket = json.loads(meta_text)
+            ticket["escalation"] = str(ticket.get("escalation", False)).lower() == "true"
             ticket["parse_error"] = False
             return reply, ticket
         except json.JSONDecodeError:
@@ -145,15 +146,19 @@ def _parse_combined_output(raw_output: str) -> tuple[str, dict]:
             if json_match:
                 try:
                     ticket = json.loads(json_match.group())
+                    ticket["escalation"] = str(ticket.get("escalation", False)).lower() == "true"
                     ticket["parse_error"] = False
                     return reply, ticket
                 except json.JSONDecodeError as e:
-                    print(f"  [WARNING] JSON parse failed in META block: {e}")
-                    print(f"  [WARNING] META content was: {meta_text[:200]!r}")
+                    if verbose:
+                        print(f"  [WARNING] JSON parse failed in META block: {e}")
+                        print(f"  [WARNING] META content was: {meta_text[:200]!r}")
     else:
-        print(f"  [WARNING] No [META] tag found in LLM output")
+        if verbose:
+            print(f"  [WARNING] No [META] tag found in LLM output")
 
-    print(f"  [WARNING] Could not parse [META] block — defaulting ticket to in_progress")
+    if verbose:
+        print(f"  [WARNING] Could not parse [META] block — defaulting ticket to in_progress")
     return reply, {
         "ticket_status": "in_progress",
         "escalation": False,
@@ -164,13 +169,15 @@ def _parse_combined_output(raw_output: str) -> tuple[str, dict]:
 
 # ── Core function ────────────────────────────────────────────────────────────
 
-def generate_response(test_case: dict, config: dict) -> dict:
+def generate_response(test_case: dict, config: dict, verbose: bool = True) -> dict:
     """
     Run one test case through the CRM auto-responder pipeline.
 
     Args:
         test_case : One case from data_loader (joined from emails.json + context.json + ground_truth.json)
         config    : Full config dict from load_config()
+        verbose   : When False, suppresses all progress and warning prints.
+                    playground.py passes True; pytest passes False via run_case().
 
     Returns:
         dict with keys:
@@ -194,12 +201,13 @@ def generate_response(test_case: dict, config: dict) -> dict:
     if rag_mode == "live":
         from src.rag.retriever import retrieve
         context = retrieve(test_case["email_body"], config)
-        print(f"  → RAG mode: live — retrieved {len(context)} chunks from ChromaDB")
+        if verbose:
+            print(f"  → RAG mode: live — retrieved {len(context)} chunks from ChromaDB")
     else:
-        # simulated: pre-filled context from context.json (default, all existing tests pass)
         context = test_case["retrieved_chunks"]
 
-    print(f"\n  → Generating reply + ticket prediction with {provider}/{model} (single call)...")
+    if verbose:
+        print(f"\n  → Generating reply + ticket prediction with {provider}/{model} (single call)...")
 
     # ONE call — reply and ticket metadata together
     llm    = _get_llm(sut_cfg)
@@ -218,7 +226,8 @@ def generate_response(test_case: dict, config: dict) -> dict:
                     f"SUT rate limit hit after {max_retries} retries — {type(e).__name__}: {str(e)[:120]}"
                 ) from e
             wait = 15 * attempt  # 15s, 30s, 45s
-            print(f"  [rate limit] SUT 429 on attempt {attempt}/{max_retries} — retrying in {wait}s...")
+            if verbose:
+                print(f"  [rate limit] SUT 429 on attempt {attempt}/{max_retries} — retrying in {wait}s...")
             time.sleep(wait)
         except Exception as e:
             if provider == "ollama" and ("Connection refused" in str(e) or "ConnectError" in type(e).__name__):
@@ -228,13 +237,14 @@ def generate_response(test_case: dict, config: dict) -> dict:
                     f"  Then check the model is pulled: ollama pull {model}"
                 ) from e
             raise
-    generated_reply, ticket_result = _parse_combined_output(raw_output)
+    generated_reply, ticket_result = _parse_combined_output(raw_output, verbose=verbose)
 
     # Validate ticket_status is one of the 4 allowed values
     valid_statuses = {"open", "in_progress", "escalated", "resolved"}
     ticket_status  = ticket_result.get("ticket_status", "in_progress")
     if ticket_status not in valid_statuses:
-        print(f"  [WARNING] Invalid ticket_status '{ticket_status}' — defaulting to in_progress")
+        if verbose:
+            print(f"  [WARNING] Invalid ticket_status '{ticket_status}' — defaulting to in_progress")
         ticket_result["ticket_status"] = "in_progress"
 
     # Reconstruct ground_truth sub-dict for downstream evaluators
@@ -264,7 +274,6 @@ def generate_response(test_case: dict, config: dict) -> dict:
         "ground_truth"            : ground_truth,
         "validation_focus"        : test_case.get("validation_focus", []),
         "llm_syndrome_watch"      : test_case.get("llm_syndrome_watch", ""),
-        "evaluation_overrides"    : test_case.get("evaluation_overrides", {})
     }
 
 

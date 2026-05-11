@@ -2,23 +2,26 @@
 ragas_evaluator.py
 ------------------
 STATUS: Tier 2 — experimental, not integrated into Tier 1 pipeline.
-        Only implements faithfulness and answer_relevance (2 of 4 RAGAs metrics).
-        context_precision and context_recall are not yet implemented.
+        Implements all 4 RAGAs metrics: faithfulness, answer_relevance,
+        context_precision, context_recall.
         Use combined_evaluator.py for Tier 1 runs (mode: "combined" in config.yaml).
 
-RAGAs-based evaluator for faithfulness and answer_relevance.
-
-Uses RAGAs 0.4.x modern API (collections metrics + llm_factory) routed through
-Ollama's OpenAI-compatible endpoint (http://localhost:11434/v1).
+RAGAs-based evaluator using RAGAs 0.4.x modern API (collections metrics + llm_factory)
+routed through an OpenAI-compatible endpoint (Gemini, Groq, or Ollama).
 
 Why this approach works where the old one failed:
     Old path: LangchainLLMWrapper → deprecated, small models fail structured prompts
-    New path: AsyncOpenAI client → Ollama /v1 endpoint → llm_factory → InstructorLLM
+    New path: AsyncOpenAI client → provider /v1 endpoint → llm_factory → InstructorLLM
     InstructorLLM is what RAGAs collections metrics require.
 
-Tier 1 active metrics:
-    faithfulness      — are all claims in the reply supported by the retrieved context?
-    answer_relevance  — is the reply actually answering the customer's question?
+Metrics:
+    faithfulness      — all claims in reply traceable to retrieved context
+    answer_relevance  — reply addresses the customer's question
+    context_precision — retrieved chunks are relevant (no noise)
+    context_recall    — all necessary context was retrieved
+
+context_precision requires: user_input, retrieved_contexts, reference (ground truth)
+context_recall    requires: retrieved_contexts, reference (ground truth)
 
 Score extraction: result.value (not .score — RAGAs 0.4.x MetricResult API)
 
@@ -39,7 +42,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 def evaluate(pipeline_output: dict, config: dict) -> dict:
     """
-    Run RAGAs faithfulness and answer_relevance on one pipeline output.
+    Run all 4 RAGAs metrics on one pipeline output.
 
     Args:
         pipeline_output : dict from crm_responder.generate_response()
@@ -49,32 +52,37 @@ def evaluate(pipeline_output: dict, config: dict) -> dict:
 
     Returns:
         {
-            "faithfulness"     : {"score": float|None, "error": str|None},
-            "answer_relevance" : {"score": float|None, "error": str|None}
+            "faithfulness"      : {"score": float|None, "error": str|None},
+            "answer_relevance"  : {"score": float|None, "error": str|None},
+            "context_precision" : {"score": float|None, "error": str|None},
+            "context_recall"    : {"score": float|None, "error": str|None},
         }
         score is None if the judge LLM failed.
     """
     from ragas.metrics.collections.faithfulness import Faithfulness
     from ragas.metrics.collections.answer_relevancy import AnswerRelevancy
+    from ragas.metrics.collections.context_precision import ContextPrecision
+    from ragas.metrics.collections.context_recall import ContextRecall
     from src.utils.config_loader import get_judge_config
 
-    judge_cfg  = get_judge_config(config)
-    provider   = judge_cfg["provider"]
-    model      = judge_cfg["model"]
-    api_key    = judge_cfg["api_key"]
+    from src.utils.config_loader import get_rag_config
+    judge_cfg      = get_judge_config(config)
+    model          = judge_cfg["model"]
+    api_key        = judge_cfg["api_key"]
+    embedding_model = get_rag_config(config).get("embedding_model", "all-MiniLM-L6-v2")
     user_input = pipeline_output["input_email"]
     response   = pipeline_output["generated_reply"]
     contexts   = pipeline_output["retrieved_context"]
+    reference  = pipeline_output.get("ground_truth", {}).get("expected_reply", "")
 
     def build_llm_and_emb():
         """
         Return (llm, emb, async_client) for RAGAs metrics.
 
-        RAGAs 0.4.x collections metrics (Faithfulness, AnswerRelevancy) ONLY accept
-        InstructorLLM — created via llm_factory(). LangchainLLMWrapper is explicitly
-        rejected. All providers must go through AsyncOpenAI + llm_factory.
+        RAGAs 0.4.x collections metrics ONLY accept InstructorLLM — created via
+        llm_factory(). All providers go through AsyncOpenAI + llm_factory.
 
-        Gemini:       AsyncOpenAI → Gemini OpenAI-compatible endpoint (/v1beta/openai/)
+        Gemini:        AsyncOpenAI → Gemini OpenAI-compatible endpoint (/v1beta/openai/)
         Groq / Ollama: AsyncOpenAI → respective OpenAI-compatible endpoint
         """
         from openai import AsyncOpenAI
@@ -82,17 +90,18 @@ def evaluate(pipeline_output: dict, config: dict) -> dict:
         from ragas.embeddings import embedding_factory
         client = AsyncOpenAI(base_url=judge_cfg["base_url"], api_key=api_key)
         llm    = llm_factory(model, client=client)
-        emb    = embedding_factory("openai", model="nomic-embed-text", client=client)
+        emb    = embedding_factory("openai", model=embedding_model, client=client)
         return llm, emb, client
 
     async def _run_all():
-        # async_client is None for Gemini (LangChain handles its own session)
         llm, emb, async_client = build_llm_and_emb()
         scores = {}
 
         try:
-            f_metric  = Faithfulness(llm=llm)
-            ar_metric = AnswerRelevancy(llm=llm, embeddings=emb)
+            f_metric   = Faithfulness(llm=llm)
+            ar_metric  = AnswerRelevancy(llm=llm, embeddings=emb)
+            cp_metric  = ContextPrecision(llm=llm)
+            cr_metric  = ContextRecall(llm=llm)
 
             # ── Faithfulness ──────────────────────────────────────────────────
             try:
@@ -101,15 +110,9 @@ def evaluate(pipeline_output: dict, config: dict) -> dict:
                     response=response,
                     retrieved_contexts=contexts
                 )
-                scores["faithfulness"] = {
-                    "score" : round(float(result.value), 4),
-                    "error" : None
-                }
+                scores["faithfulness"] = {"score": round(float(result.value), 4), "error": None}
             except Exception as e:
-                scores["faithfulness"] = {
-                    "score" : None,
-                    "error" : f"RAGAs judge failed: {type(e).__name__}: {str(e)[:120]}"
-                }
+                scores["faithfulness"] = {"score": None, "error": f"RAGAs: {type(e).__name__}: {str(e)[:120]}"}
 
             # ── Answer Relevance ──────────────────────────────────────────────
             try:
@@ -117,21 +120,43 @@ def evaluate(pipeline_output: dict, config: dict) -> dict:
                     user_input=user_input,
                     response=response
                 )
-                scores["answer_relevance"] = {
-                    "score" : round(float(result.value), 4),
-                    "error" : None
-                }
+                scores["answer_relevance"] = {"score": round(float(result.value), 4), "error": None}
             except Exception as e:
-                scores["answer_relevance"] = {
-                    "score" : None,
-                    "error" : f"RAGAs judge failed: {type(e).__name__}: {str(e)[:120]}"
-                }
+                scores["answer_relevance"] = {"score": None, "error": f"RAGAs: {type(e).__name__}: {str(e)[:120]}"}
+
+            # ── Context Precision ─────────────────────────────────────────────
+            # Measures signal-to-noise in retrieved chunks: are the top-ranked
+            # chunks actually relevant to the ground truth answer?
+            try:
+                result = await cp_metric.ascore(
+                    user_input=user_input,
+                    retrieved_contexts=contexts,
+                    reference=reference
+                )
+                scores["context_precision"] = {"score": round(float(result.value), 4), "error": None}
+            except Exception as e:
+                scores["context_precision"] = {"score": None, "error": f"RAGAs: {type(e).__name__}: {str(e)[:120]}"}
+
+            # ── Context Recall ────────────────────────────────────────────────
+            # Measures coverage: did the retriever surface all facts needed to
+            # produce the expected answer?
+            try:
+                result = await cr_metric.ascore(
+                    user_input=user_input,
+                    retrieved_contexts=contexts,
+                    reference=reference
+                )
+                scores["context_recall"] = {"score": round(float(result.value), 4), "error": None}
+            except Exception as e:
+                scores["context_recall"] = {"score": None, "error": f"RAGAs: {type(e).__name__}: {str(e)[:120]}"}
 
         except Exception as e:
             err = f"Failed to initialise RAGAs metrics: {e}"
             scores = {
-                "faithfulness"     : {"score": None, "error": err},
-                "answer_relevance" : {"score": None, "error": err}
+                "faithfulness"      : {"score": None, "error": err},
+                "answer_relevance"  : {"score": None, "error": err},
+                "context_precision" : {"score": None, "error": err},
+                "context_recall"    : {"score": None, "error": err},
             }
         finally:
             if async_client is not None:
@@ -160,13 +185,13 @@ if __name__ == "__main__":
     console.print("  → Running CRM responder...")
     result = generate_response(test_case, config)
 
-    console.print("  → Running RAGAs evaluation...\n")
+    console.print("  → Running RAGAs evaluation (all 4 metrics)...\n")
     scores = evaluate(result, config)
 
     table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("Metric",  min_width=20)
+    table.add_column("Metric",  min_width=22)
     table.add_column("Score",   min_width=10)
-    table.add_column("Status",  min_width=30)
+    table.add_column("Status",  min_width=50)
 
     for metric, data in scores.items():
         score = data["score"]
@@ -177,7 +202,7 @@ if __name__ == "__main__":
             status_str = "[green]✓ scored[/green]"
         else:
             score_str  = "[dim]None[/dim]"
-            status_str = f"[yellow]⚠ {error}[/yellow]"
+            status_str = f"[yellow]⚠ {(error or '')[:48]}[/yellow]"
         table.add_row(metric, score_str, status_str)
 
     console.print(table)

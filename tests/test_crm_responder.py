@@ -162,7 +162,6 @@ class TestGenerateResponseIntegration:
             "generated_reply", "predicted_ticket_status", "predicted_escalation",
             "ticket_reasoning", "meta_parse_error", "model_used",
             "ground_truth", "validation_focus", "llm_syndrome_watch",
-            "evaluation_overrides",
         ]
         for key in required_keys:
             assert key in result, f"Missing key in pipeline output: '{key}'"

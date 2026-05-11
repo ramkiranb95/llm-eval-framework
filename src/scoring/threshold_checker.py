@@ -7,11 +7,12 @@ passed / failed / critical.
 Handles two score polarities:
     Normal  — higher is better (faithfulness, answer_relevance, key_facts_coverage…)
               PASS if score >= threshold
-    Inverted — lower is better (hallucination)
+    Inverted — lower is better (hallucination, toxicity)
               PASS if score <= threshold
 
-Per-case overrides in evaluation_overrides (from ground_truth.json) take
-precedence over global config.yaml thresholds when set.
+All thresholds are read from global config.yaml. Per-case overrides are not
+supported — use separate test suites with separate configs for different
+threshold requirements.
 
 Usage:
     from src.scoring.threshold_checker import check_thresholds
@@ -27,27 +28,15 @@ from typing import Optional
 INVERTED_METRICS = {"hallucination", "toxicity"}
 
 
-def _resolve_threshold(
-    metric_name    : str,
-    global_config  : dict,
-    overrides      : dict
-) -> Optional[float]:
+def _resolve_threshold(metric_name: str, global_config: dict) -> Optional[float]:
     """
-    Find the threshold for a given metric.
-    Returns the per-case override if set, otherwise the global config threshold.
+    Find the threshold for a given metric from global config.
     Returns None if the metric is not found in config.
     """
-    # Per-case override wins
-    override_key = f"{metric_name}_threshold"
-    if override_key in overrides:
-        return overrides[override_key]
-
-    # Walk global config: evaluation.<group>.<metric>.threshold
     eval_cfg = global_config.get("evaluation", {})
     for _group, group_metrics in eval_cfg.items():
         if isinstance(group_metrics, dict) and metric_name in group_metrics:
             return group_metrics[metric_name].get("threshold")
-
     return None
 
 
@@ -60,13 +49,9 @@ def _is_critical(metric_name: str, global_config: dict) -> bool:
     return False
 
 
-def check_thresholds(
-    all_scores : dict,
-    config     : dict,
-    overrides  : Optional[dict] = None
-) -> dict:
+def check_thresholds(all_scores: dict, config: dict) -> dict:
     """
-    Compare each metric score against its threshold and mark pass/fail/critical.
+    Compare each metric score against its global threshold and mark pass/fail/critical.
 
     Args:
         all_scores : merged dict of all evaluator outputs, keyed by metric name.
@@ -80,7 +65,6 @@ def check_thresholds(
                          ...
                        }
         config     : full config dict from load_config()
-        overrides  : per-case evaluation_overrides dict (may be empty or None)
 
     Returns:
         dict keyed by metric name:
@@ -97,13 +81,12 @@ def check_thresholds(
         }
         If score is None (judge LLM failed), passed=False and a note is added.
     """
-    overrides = overrides or {}
-    results   = {}
+    results = {}
 
     for metric_name, data in all_scores.items():
-        score    = data.get("score")
-        error    = data.get("error")
-        threshold = _resolve_threshold(metric_name, config, overrides)
+        score     = data.get("score")
+        error     = data.get("error")
+        threshold = _resolve_threshold(metric_name, config)
         critical  = _is_critical(metric_name, config)
         inverted  = metric_name in INVERTED_METRICS
 
@@ -159,20 +142,16 @@ if __name__ == "__main__":
 
     config = load_config()
 
-    # Mock scores — simulating a TC003 grievance case with an override
     mock_scores = {
         "faithfulness"          : {"score": 0.82, "error": None},
         "answer_relevance"      : {"score": 0.78, "error": None},   # will fail (< 0.80)
         "hallucination"         : {"score": 0.04, "error": None},   # inverted
         "ticket_status_accuracy": {"score": 1.00, "notes": "predicted=escalated | expected=escalated"},
         "escalation_logic"      : {"score": 1.00, "notes": "predicted=True | expected=True"},
-        "key_facts_coverage"    : {"score": 0.60, "notes": "3/5 facts found"},  # will fail (< 0.75)
+        "key_facts_coverage"    : {"score": 0.60, "notes": "3/5 facts found"},  # will fail (< 0.50)
     }
 
-    # TC003 has faithfulness override of 0.90
-    mock_overrides = {"faithfulness_threshold": 0.90, "hallucination_threshold": 0.05}
-
-    results = check_thresholds(mock_scores, config, mock_overrides)
+    results = check_thresholds(mock_scores, config)
 
     table = Table(show_header=True, header_style="bold magenta")
     table.add_column("Metric",    width=24)
@@ -206,5 +185,5 @@ if __name__ == "__main__":
         )
 
     console.print(table)
-    console.print("\n[dim]Note: faithfulness threshold is 0.90 (TC003 override, not global 0.85)\n      hallucination is inverted — 0.04 ≤ 0.05 = PASS[/dim]")
+    console.print("\n[dim]All thresholds from global config.yaml — no per-case overrides[/dim]")
     console.print("\n[bold green]✓ Threshold checker working[/bold green]\n")
