@@ -28,10 +28,10 @@ llm:
   # ── Judge LLM (evaluates SUT output via RAGAs + DeepEval) ──
   # Switch provider here — key is read from .env automatically.
   # Options: "gemini" | "groq" | "ollama"
-  judge_provider: "gemini"
-  judge_model: "gemini-2.0-flash-lite"     # gemini free tier — sufficient for TC001 single case (~25 calls)
-  # judge_provider: "groq"
-  # judge_model: "llama-3.3-70b-versatile" # groq provider — 30 RPM, 100K TPD — insufficient for separate mode
+  # judge_provider: "gemini"
+  # judge_model: "gemini-2.0-flash-lite"   # gemini free tier — 1K RPD, exhausts fast
+  judge_provider: "groq"
+  judge_model: "llama-3.3-70b-versatile"   # groq — 30 RPM, 100K TPD — fine for combined mode (1 call/case)
   # judge_provider: "ollama"
   # judge_model: "llama3.2:3b"             # ollama provider — too slow, fails structured output on 3B model
 
@@ -45,7 +45,7 @@ llm:
 # -- PIPELINE VALIDATION ------------------------------------
 pipeline:
   min_email_body_length: 50   # emails shorter than this are skipped before any LLM call
-  inter_case_delay_seconds: 2    # pause between cases — Ollama is local, no quota; Judge is Gemini flash-lite (1M TPM)
+  inter_case_delay_seconds: 4    # pause between cases — Ollama is local, no quota; Judge is Gemini flash-lite (1M TPM)
   case_timeout_seconds: 120   # per-case wall-clock timeout for generate_response()
   confidence_threshold: 0.50  # if any critical LLM metric score is below this, assign to human agent
 
@@ -96,7 +96,7 @@ evaluation:
   # ── Evaluator mode ──────────────────────────────────────────
   # combined : 1 LLM call per case — all 15 metrics in one prompt (Tier 1 — active)
   # separate : RAGAs + DeepEval libraries independently — Tier 2 (active)
-  mode: "separate"
+  mode: "combined"
 
   # NOTE — combined mode thresholds (see learningLog L007):
   # Combined mode uses a single LLM call for all 7 metrics. Single-pass judgment

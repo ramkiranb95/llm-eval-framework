@@ -23,7 +23,7 @@
 ### Run a Single Case
 
 ```bash
-python playground.py --case TC001
+python playground.py TC001
 ```
 
 ### Run All 16 Cases
@@ -35,13 +35,13 @@ python playground.py --all
 ### Run Specific Cases
 
 ```bash
-python playground.py --cases TC001 TC003 TC013
+python playground.py TC001 TC003 TC013
 ```
 
 ### Silent Mode (no terminal output — scores only)
 
 ```bash
-python playground.py --case TC001 --no-verbose
+python playground.py TC001 --no-verbose
 ```
 
 ---
