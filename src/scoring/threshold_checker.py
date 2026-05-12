@@ -123,7 +123,8 @@ def check_thresholds(all_scores: dict, config: dict) -> dict:
             "passed"    : passed,
             "critical"  : critical,
             "inverted"  : inverted,
-            "error"     : note or error
+            "error"     : note or error,
+            "reason"    : data.get("reason", ""),
         }
 
     return results

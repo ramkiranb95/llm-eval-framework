@@ -162,6 +162,24 @@ def print_terminal_report(
                 + (f" [{f['error']}]" if f.get("error") else "")
             )
 
+    # ── Per-case metric reasons ───────────────────────────────────────────────
+    console.print("\n[bold]Metric Reasons:[/bold]")
+    for cr in case_threshold_results:
+        case_id = cr.get("id", "—")
+        console.print(f"\n  [bold cyan]{case_id}[/bold cyan]")
+        for metric, data in cr.items():
+            if metric == "id" or not isinstance(data, dict):
+                continue
+            reason = data.get("reason", "")
+            if not reason:
+                continue
+            passed = data.get("passed", False)
+            colour = "green" if passed else "red"
+            symbol = "✓" if passed else "✗"
+            score  = data.get("score")
+            score_str = f"{score:.2f}" if score is not None else "—"
+            rprint(f"    [{colour}]{symbol}[/{colour}] [bold]{metric}[/bold] ({score_str}): {reason}")
+
 
 def save_json_report(
     case_results          : list,

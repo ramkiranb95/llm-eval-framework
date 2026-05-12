@@ -266,16 +266,40 @@ def _print_routing_decision(
                     f"{metric}={score:.3f} below confidence_threshold={confidence_threshold}"
                 )
 
+    # ── Composite confidence score — weighted average of critical LLM metrics ──
+    # Weights reflect BSFI risk priority: hallucination + faithfulness matter most
+    CONFIDENCE_WEIGHTS = {
+        "faithfulness"      : 0.30,
+        "hallucination"     : 0.30,   # inverted — contribution = 1 - score
+        "answer_relevance"  : 0.20,
+        "answer_correctness": 0.20,
+    }
+    weighted_sum  = 0.0
+    weight_total  = 0.0
+    for metric, weight in CONFIDENCE_WEIGHTS.items():
+        score = llm_scores.get(metric, {}).get("score")
+        if score is None:
+            continue
+        contribution = (1.0 - score) if metric in INVERTED_METRICS else score
+        weighted_sum  += contribution * weight
+        weight_total  += weight
+
+    confidence_score = (weighted_sum / weight_total) if weight_total > 0 else None
+
     ticket_status = pipeline_output.get("predicted_ticket_status", "—")
 
     if reasons:
         console.print(f"\n[bold red]⚠  ROUTING: Assign to human agent[/bold red]")
         console.print(f"   Ticket status : [yellow]{ticket_status}[/yellow]")
+        if confidence_score is not None:
+            console.print(f"   Confidence    : [yellow]{confidence_score:.2f}[/yellow] (threshold: {confidence_threshold})")
         for r in reasons:
             console.print(f"   Reason        : [yellow]{r}[/yellow]")
     else:
         console.print(f"\n[bold green]✓  ROUTING: Auto-reply eligible[/bold green]")
         console.print(f"   Ticket status : [green]{ticket_status}[/green]")
+        if confidence_score is not None:
+            console.print(f"   Confidence    : [green]{confidence_score:.2f}[/green] (threshold: {confidence_threshold})")
 
 
 def _print_scores_table(threshold_result: dict) -> None:
@@ -421,6 +445,23 @@ def main():
                 f"  [red]✗[/red] {f['case_id']} / {f['metric']}"
                 f" — score={f['score']} threshold={f['threshold']}"
             )
+
+    console.print("\n[bold]Metric Reasons:[/bold]")
+    for cr in all_threshold_results:
+        case_id = cr.get("id", "—")
+        console.print(f"\n  [bold cyan]{case_id}[/bold cyan]")
+        for metric, data in cr.items():
+            if metric == "id" or not isinstance(data, dict):
+                continue
+            reason = data.get("reason", "")
+            if not reason:
+                continue
+            passed = data.get("passed", False)
+            colour = "green" if passed else "red"
+            symbol = "✓" if passed else "✗"
+            score  = data.get("score")
+            score_str = f"{score:.2f}" if score is not None else "—"
+            rprint(f"    [{colour}]{symbol}[/{colour}] [bold]{metric}[/bold] ({score_str}): {reason}")
 
     if args.save_report:
         try:
